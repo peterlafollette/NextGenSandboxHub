@@ -124,8 +124,8 @@ nom_params: &nom_params
   -
     name: MFSNO # fractional snow covered area (FSNO) curve parameter (pseduo multiplier)
     min: 0.625
-    max: 2.5
-    init: 5.0
+    max: 5.0
+    init: 2.5
   -
     name: SCAMAX # maximum fractional snow-covered area
     min: 0.7
@@ -201,7 +201,8 @@ topmod_params: &topmod_params
     init: 1000
     min: 10
     max: 4000
-    
+
+
 ###################################  LGAR  #########################################
 # inside config_calib.yaml use
 # model:

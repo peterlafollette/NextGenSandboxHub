@@ -110,8 +110,8 @@ noah_owp_params: &noah_owp_params
   -
     name: MFSNO # fractional snow covered area (FSNO) curve parameter (pseduo multiplier)
     min: 0.625
-    max: 2.5
-    init: 5.0
+    max: 5.0
+    init: 2.5
   -
     name: SCAMAX # maximum fractional snow-covered area
     min: 0.7
