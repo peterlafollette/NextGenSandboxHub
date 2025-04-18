@@ -17,7 +17,6 @@
 # 1st build T-ROUTE >> this helps to create t-route based environment which will also be handy for NGEN
 # 2nd build NGEN
 # 3rd build MODELS
-# 4th build WORKFLOW
 ###############################################################
 
 export wkdir=$(pwd)
@@ -26,13 +25,11 @@ cd ${wkdir}
 
 #####################################################
 
-BUILD_TROUTE=ON
+BUILD_TROUTE=OFF
 BUILD_NGEN=OFF
 BUILD_MODELS=OFF
-BUILD_WORKFLOW=OFF
 
-ngen_dir=<path_to_ngen>
-sandboxhub_dir=<path_to_sandboxhub>
+ngen_dir= <path_to_nextgen_repo>  #/Users/ahmadjankhattak/Code/ngen/ngen
 
 # Notes:
 # If vevn_forcing failed or forcing downloader is failing, that could be due to inconsistent
@@ -71,14 +68,16 @@ build_troute()
     git checkout master
     git pull
 
-    mkdir ~/vevn_ngen_py3.11
-    python3.11 -m venv ~/vevn_ngen_py3.11
-    source ~/vevn_ngen_py3.11/bin/activate
-    pip install -U pip==24.0
-    sed -i 's/netcdf4/netcdf4<=1.6.3/g' extern/t-route/requirements.txt
-    pip install -r extern/t-route/requirements.txt 
-    #hot patch nc config to nf config
-    sed -i 's/nc-config/nf-config/g' src/kernel/reservoir/makefile
+    # these are no longer needed as workflow env is already built using the same packages/versions
+    #mkdir ~/vevn_ngen_py3.11
+    #python3.11 -m venv ~/vevn_ngen_py3.11
+    #source ~/vevn_ngen_py3.11/bin/activate
+    #pip install -U pip==24.0
+    #sed -i 's/netcdf4/netcdf4<=1.6.3/g' extern/t-route/requirements.txt
+    #pip install -r extern/t-route/requirements.txt 
+    ##hot patch nc config to nf config
+    #sed -i 's/nc-config/nf-config/g' src/kernel/reservoir/makefile
+
     ./compiler.sh no-e
     popd
 }
@@ -110,28 +109,6 @@ build_models()
     popd
 }
 
-build_workflow()
-{
-    pushd $sandboxhub_dir
-    
-    git submodule update --init
-    git submodule update --remote extern/ngen-cal
-    git submodule update --remote extern/CIROH_DL_NextGen
-    
-    pip install 'extern/ngen-cal/python/ngen_cal[netcdf]'
-    pip install extern/ngen-cal/python/ngen_config_gen
-    pip install hydrotools.events
-    pip install -e ./extern/ngen_cal_plugins
-    
-    mkdir ~/venv_forcing
-    python3.11 -m venv ~/venv_forcing
-    source ~/venv_forcing/bin/activate
-    pip install -U pip==24.0
-    pip install -r extern/CIROH_DL_NextGen/forcing_prep/requirements.txt
-
-    popd
-}
-
 
 if [ "$BUILD_NGEN" == "ON" ]; then
     echo "NextGen build: ${BUILD_NGEN}"
@@ -144,10 +121,6 @@ fi
 if [ "$BUILD_MODELS" == "ON" ]; then
     echo "Models build: ${BUILD_MODELS}"
     build_models
-fi
-if [ "$BUILD_WORKFLOW" == "ON" ]; then
-    echo "Workflow build: ${BUILD_WORKFLOW}"
-    build_workflow
 fi
 
 #if [ "$model" == "ngen-cal" ] && [ "$BUILD_CALIB" == "ON" ]; then

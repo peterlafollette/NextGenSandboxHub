@@ -7,7 +7,6 @@
 # main script that loops over all the gage IDs and computes giuh/twi etc.
 DriverGivenGageIDs <- function(gage_ids, 
                                output_dir,
-                               failed_dir = "failed_cats",
                                dem_input_file = NULL,
                                dem_output_dir = "",
                                compute_divide_attributes = FALSE,
@@ -15,10 +14,8 @@ DriverGivenGageIDs <- function(gage_ids,
   
   print ("DRIVER GIVEN GAGE ID")
 
-  # create directory to stored catchment geopackage in case of errors or missing data
-  failed_dir = "failed_cats"
-  dir.create(failed_dir, recursive = TRUE, showWarnings = FALSE)
-
+  dir.create(glue("{output_dir}/basins_failed"), recursive = TRUE, showWarnings = FALSE)
+  
   # if (nproc > parallel::detectCores()) {
   #   nproc = parallel::detectCores() - 1
   # }
@@ -53,12 +50,10 @@ DriverGivenGageIDs <- function(gage_ids,
 
   # stopCluster(cl)
 
-  lapply(X = gage_ids, FUN = ProcessCatchmentID, failed_dir = failed_dir)
-  
+  lapply(X = gage_ids, FUN = ProcessCatchmentID)
   
   setwd(output_dir)
   
-  # return(cats_failed)
 }
 
 #-----------------------------------------------------------------------------#
@@ -66,10 +61,9 @@ DriverGivenGageIDs <- function(gage_ids,
 # for each catchemnt id
 # it calls run_driver for each gage id and computes giuh/twi etc.
 
-ProcessCatchmentID <- function(id, failed_dir) {
+ProcessCatchmentID <- function(id) {
+  
   print ("PROCESS CATCHMENT ID FUNCTION")
-  # vector contains ID of basins that failed for some reason
-  cats_failed <- numeric(0)
   
   # uncomment for debugging, it puts screen outputs to a file
   #log_file <- file("output.log", open = "wt")
@@ -105,9 +99,8 @@ ProcessCatchmentID <- function(id, failed_dir) {
   clean_move_dem_dir(id = id, output_dir = output_dir, dem_output_dir = dem_output_dir)
   
   if (failed) {
-    cat ("Cat failed:", id, "\n")
-    cats_failed <- id
-    cat_failed_dir = glue("{output_dir}/{failed_dir}/{id}")
+    cat ("Basin failed:", id, "\n")
+    cat_failed_dir = glue("{output_dir}/basins_failed/{id}")
     
     if (file.exists(cat_failed_dir) ) {
       unlink(cat_failed_dir, recursive = TRUE)
@@ -117,13 +110,11 @@ ProcessCatchmentID <- function(id, failed_dir) {
     
   }
   else {
-    cat ("Cat passed:", id, "\n")
+    cat ("Basin Passed:", id, "\n")
   }
   
   #sink(type = "output")
   #close(log_file)
-  
-  return(cats_failed)
 }
 
 ############################ DRIVER_GIVEN_GPKG #################################
@@ -131,7 +122,6 @@ ProcessCatchmentID <- function(id, failed_dir) {
 DriverGivenGPKG <- function(gage_files, 
                             gpkg_dir, 
                             output_dir,
-                            failed_dir = "failed_cats",
                             dem_output_dir = "",
                             dem_input_file = NULL,
                             compute_divide_attributes = FALSE,
@@ -144,6 +134,7 @@ DriverGivenGPKG <- function(gage_files,
   # create directory to stored catchment geopackage in case of errors or missing data
   #failed_dir = "failed_cats"
   
+  failed_dir <- glue("{output_dir}/basins_failed")
   if (dir.exists(failed_dir)) {
     unlink(failed_dir, recursive = TRUE)
   }
@@ -388,14 +379,6 @@ RunDriver <- function(gage_id = NULL,
      d_attr <- read_sf(outfile, 'divide-attributes')
    }
 
-  #if (hf_version == "2.2") {
-  #  d_attr <- read_sf(outfile, 'divide-attributes')
-  #} else if (hf_version == "2.1.1") {
-  #  d_attr <- read_sf(outfile, 'model-attributes')
-  #}
-
-  # layers_after_cfe_attr <- sf::st_layers(outfile)
-  #print (layers_after_cfe_attr$name)
   
   ############################### GENERATE TWI ##################################
   # STEP #5: Generate TWI and width function and write to the geopackage

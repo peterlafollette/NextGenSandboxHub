@@ -135,37 +135,49 @@ if (use_gage_id == TRUE || use_gage_file == TRUE) {
   
   stopifnot( length(gage_ids) > 0)
 
-  cats_failed <- DriverGivenGageIDs(gage_id = gage_ids, 
-                                    output_dir = output_dir,
-                                    nproc = nproc,
-                                    dem_output_dir = dem_output_dir,
-                                    dem_input_file = dem_input_file,
-                                    compute_divide_attributes = compute_divide_attributes
-                                    )
+  DriverGivenGageIDs(gage_id = gage_ids, 
+                    output_dir = output_dir,
+                    nproc = nproc,
+                    dem_output_dir = dem_output_dir,
+                    dem_input_file = dem_input_file,
+                    compute_divide_attributes = compute_divide_attributes
+                    )
   
   
 } else if (use_gpkg == TRUE) {
 
   gage_files = list.files(gpkg_dir, full.names = TRUE, pattern = pattern)
   
-  cats_failed <- driver_given_gpkg(gage_files = gage_files, 
-                                   gpkg_dir = gpkg_dir, 
-                                   output_dir = output_dir,
-                                   nproc = nproc,
-                                   dem_output_dir = dem_output_dir,
-                                   dem_input_file = dem_input_file,
-                                   compute_divide_attributes = compute_divide_attributes
-                                   )
+  DriverGivenGPKG(gage_files = gage_files, 
+                  gpkg_dir   = gpkg_dir, 
+                  output_dir = output_dir,
+                  nproc = nproc,
+                  dem_output_dir = dem_output_dir,
+                  dem_input_file = dem_input_file,
+                  compute_divide_attributes = compute_divide_attributes
+                  )
 }
 
 
 end_time <- Sys.time()
 time_taken <- as.numeric(end_time - start_time, units = "secs")
-print (paste0("Time total = ", time_taken))
+print (paste0("Total Time Taken = ", time_taken))
 
-if (length(cats_failed) > 0) {
-   print(paste0("failed_cats ", cats_failed))
-}
+# check for failed basins
+basins_failed <- glue("{output_dir}/basins_failed")
+
+if (dir.exists(basins_failed)) {
+  files <- list.files(basins_failed, full.names = TRUE)
+  subdirs <- files[dir.exists(files)]
+  if (length(subdirs) > 0) {
+    subdir_names <- basename(subdirs)
+    print("List of Basins failed..")
+    print(subdir_names)
+  }
+  else {
+    print ("All Basins Passed!!!")
+  }
+} 
 
 
 ################################### DONE #######################################

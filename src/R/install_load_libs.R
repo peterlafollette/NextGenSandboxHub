@@ -36,6 +36,8 @@ if(!requireNamespace("zonal", quietly=TRUE))
 if(!requireNamespace("AOI", quietly=TRUE))
   devtools::install_github("mikejohnson51/AOI")
 
+if(!requireNamespace("hfsubsetR", quietly=TRUE))
+  remotes::install_github("owp-spatial/hfsubsetR")
 
 if(!requireNamespace("sf", quietly=TRUE)) 
   install.packages("sf")
@@ -142,3 +144,4 @@ libraries_lst <- c(suppressPackageStartupMessages(library(hydrofabric)),
 #domain  <- "conus"
 
 #(sys <- glue::glue("aws s3 sync {s3}/{version}/{type} {local}/{version}/{type}"))
+

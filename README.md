@@ -10,10 +10,11 @@
 ## Configuration
 Note: The workflow assumes that [ngen](https://github.com/NOAA-OWP/ngen) and other models have already been built, including [t-route](https://github.com/NOAA-OWP/t-route). It is also assumed that both ngen and t-route were built within a Python environment named `.venv_ngen`.
 
-### <ins>  Step 1. Clone Repository
+### <ins>  Step 1. Build Workflow
   - `git clone https://github.com/ajkhattak/NextGenSandboxHub && cd NextGenSandboxHub`
   - `git submodule update --init`
-
+  - Run `./utils/build_workflow.sh` (this will install python env required for the workflow, t-route, and ngen)
+  
 ### <ins>  Step 2. Hydrofabric Installation
 Ensure R and Rtools are already installed before proceeding. There are two ways to install the required packages:
   #### Option 1: Using RStudio

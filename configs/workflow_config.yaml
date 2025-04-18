@@ -1,8 +1,8 @@
 # make sure to install yaml package using install.packages("yaml") if not installed already
 
-workflow_dir  : "<path_to>/NextGenSandboxHub"
-input_dir     : "<path_to_input_dir>" ! user-specified
-output_dir    : "<path_to_output_dir>" ! user-specified
+workflow_dir  : "/Users/ahmadjankhattak/Code/workflows/NextGenSandboxHub"
+input_dir     : "<path_to_input_directory>"  # user-specified
+output_dir    : "<path_to_output_directory>" # user-specified
 
 
 ########################################################################
@@ -10,15 +10,15 @@ output_dir    : "<path_to_output_dir>" ! user-specified
 subsetting :
   hf_version               : "2.2" # Only enter version number, e.g. "2.2" or "2.1.1"
   # Ensure that this gpkg matches the hf_version specified above:
-  hf_gpkg_path             : "<path_to_HF_gpkg_file>"  #for example, "<paht_to>/conus_nextgen.gpkg"
-  dem_output_dir           : "<path_to_input_dir>/dem" # create `dem` directory yourself
+  hf_gpkg_path             : "<path_to>/conus_nextgen.gpkg"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
+  dem_output_dir           : "<path_to>/dem" # create `dem` directory yourself # output
   number_processors        : 1
 
   # Note: only gage_ids that fall within the domain of the hydrofabric listed above will be subsetted
   options :
     use_gage_id :
       use_gage_id  : TRUE
-      gage_ids     : <provide_gage_id_or_list_of_ids> #for instance, ["01105000"]
+      gage_ids     : "01105000" #for instance, ["01105000"]
     use_gage_file :
       use_gage_file : FALSE
       gage_file     : "/Users/laurenbolotin/Lauren/benchmark/benchmark2.0_final/rfc_ids_clean_conus.csv"
@@ -29,11 +29,10 @@ subsetting :
       pattern   :  "hf_v211_"
 
 ########################################################################
+#forcing data is stored under <input_dir>/gage_id/data/forcing
 forcings : 
-  forcing_format     : ".nc" 
-  forcing_venv_dir   : "<path_to_venv_forcing>" # the python environment created in Step 4 (see Readme)
-  forcing_dir        : "<path_to_input_dir>/{*}/data/forcing/2016_to_2024/" # start year and end year +1; Before the asterisk should be the same as your input_dir above
-  forcing_time       : '{"start_time" : "2016-10-01 00:00:00", "end_time" : "2023-09-30 23:00:00"}' 
+  forcing_format     : ".nc"
+  forcing_time       : {"start_time" : "2016-10-01 00:00:00", "end_time" : "2017-09-30 23:00:00"}
 
 ########################################################################
 formulation :
