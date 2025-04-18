@@ -46,7 +46,13 @@ Ensure R and Rtools are already installed before proceeding. There are two ways 
 The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextGen) forcing_prep tool to donwload atmospheric forcing data. It uses a Python environment (`~/.venv_forcing`) that is created during the workflow setup step (Step 1). To download the forcing data run:
 ```
    python <path_to_sandboxhub>/sandbox.py -forc
-``` 
+```
+
+=================================================================================================
+### Note: STEPS 5 and 6 require `ngen` build. Follow the instructions here [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) to build ngen and models.
+=================================================================================================
+
+
 ### <ins>  Step 5. Generate Configuration and Realization Files
 To generate configuratioin and realization files, setup the `formulation` block in the workflow config file [here](configs/config_workflow.yaml), and run the following command:
  ```
