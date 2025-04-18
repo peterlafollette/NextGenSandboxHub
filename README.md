@@ -37,7 +37,7 @@ Ensure R and Rtools are already installed before proceeding. There are two ways 
   - Download domain (CONUS or oCONUS) from [lynker-spatial](https://www.lynker-spatial.com/data?path=hydrofabric%2Fv2.2%2F), for instance conus/conus_nextgen.gpkg
   - open `<path_to_sandboxhub>/configs/config_workflow.yaml` [here](configs/config_workflow.yaml) and adjust workflow_dir, input_dir, output_dir, and gpkg_model_params according to your local settings
   - Now there are two options to proceed:
-      - run `python <path_to_sandboxhub>/sandbox.py -gpkg`
+      - run `python <path_to_sandboxhub>/sandbox.py -subset`
       - or open `<path_to_sandboxhub>/src/R/main.R` in RStudio and source on main.R. Note Set file name `infile_config` [here](https://github.com/ajkhattak/basin_workflow/blob/nwm-v4-bm/src/R/main.R#L54) 
     
     Either one will install the hydrofabric and several other libraries, and if everything goes well, a basin geopackage will be subsetted and stored under `<input_dir>/<basin_id>/data/gage_<basin_id>.gpkg`
@@ -72,14 +72,14 @@ Setup the `ngen_cal` block in the workflow config file [here](configs/config_wor
 4. Run Simulations: Using
   ```
     python <path_to_sandboxhub>/sandbox.py option
-    OPTIONS = [-gpkg -forc -conf -run]
+    OPTIONS = [-subset -forc -conf -run]
   ```
-- Option: `-gpkg` downloads geopackage(s) given a gage ID(s), extracts and locally compute TWI, GIUH, and Nash Cascade parameters; see `divide-attributes` in the gage_<basin_id>.gpkg file
+- Option: `-subset` downloads geopackage(s) given a gage ID(s), extracts and locally compute TWI, GIUH, and Nash Cascade parameters; see `divide-attributes` in the gage_<basin_id>.gpkg file
 - Option: `-forc` downloads geopackage(s) given a gage ID(s)
 - Option: `-conf` generates configuration and realization files for the selected models/basins
 - Option: `-run` executes NextGen simulations with and without calibration
 
-Note: These options can be run individually or combined together, for example, `path_to/sandbox.py -gpkg -conf -run`. The `-gpkg` is an expensive step, should be run once to get the desired basin geopacakge and associated model parameters.
+Note: These options can be run individually or combined together, for example, `path_to/sandbox.py -subset -conf -run`. The `-subset` is an expensive step, should be run once to get the desired basin geopacakge and associated model parameters.
 
 
 

@@ -31,10 +31,10 @@ formulations_supported = [
 
 def Sandbox(workflow_config, calib_config):
     
-    if (args.gpkg):
+    if (args.subset):
         print ("Generating geopackages...")
-        generate_gpkg = f"Rscript {workflow_dir}/src/R/main.R {workflow_config}"
-        status = subprocess.call(generate_gpkg,shell=True)
+        subset_basin = f"Rscript {workflow_dir}/src/R/main.R {workflow_config}"
+        status = subprocess.call(subset_basin,shell=True)
 
         if (status):
             sys.exit("Failed during generating geopackge(s) step...")
@@ -43,8 +43,8 @@ def Sandbox(workflow_config, calib_config):
 
     if (args.forc):
         print ("Generating forcing data...")
-        _forcing = forcing.ForcingProcessor(workflow_config)
-        status   = _forcing.download_forcing()
+        process_forcing = forcing.ForcingProcessor(workflow_config)
+        status          = process_forcing.download_forcing()
 
         if (status):
             sys.exit("Failed during generating geopackge(s) step...")
@@ -80,12 +80,12 @@ if __name__ == "__main__":
     
     try:
         parser = argparse.ArgumentParser()
-        parser.add_argument("-gpkg", action='store_true', help="generate gpkg files")
-        parser.add_argument("-forc", action='store_true', help="generate forcing data")
-        parser.add_argument("-conf", action='store_true', help="generate config files")
-        parser.add_argument("-run",  action='store_true', help="run nextgen without caliberation")
-        parser.add_argument("-i",    dest="workflow_infile",  type=str, required=False,  help="workflow config file")
-        parser.add_argument("-j",    dest="calib_infile",     type=str, required=False,  help="caliberation config file")
+        parser.add_argument("-subset", action='store_true',    help="Subset basin (generate .gpkg files)")
+        parser.add_argument("-forc",   action='store_true',    help="Download forcing data")
+        parser.add_argument("-conf",   action='store_true',    help="Generate config files")
+        parser.add_argument("-run",    action='store_true',    help="Run NextGen simulations")
+        parser.add_argument("-i",      dest="workflow_infile", type=str, required=False,  help="workflow config file")
+        parser.add_argument("-j",      dest="calib_infile",    type=str, required=False,  help="caliberation config file")
         args = parser.parse_args()
     except SystemExit:
         print("Formulations supported:\n" + "\n".join(formulations_supported))
