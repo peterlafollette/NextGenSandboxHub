@@ -49,7 +49,7 @@ The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextG
 ```
 
 =================================================================================================
-### Note: STEPS 5 and 6 require `ngen` build. Follow the instructions here [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) to build ngen and models.
+### Note: Steps 5 and 6 require `ngen` build. Follow the instructions here [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) to build ngen and models.
 =================================================================================================
 
 
