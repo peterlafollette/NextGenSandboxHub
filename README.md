@@ -43,38 +43,17 @@ Ensure R and Rtools are already installed before proceeding. There are two ways 
     Either one will install the hydrofabric and several other libraries, and if everything goes well, a basin geopackage will be subsetted and stored under `<input_dir>/<basin_id>/data/gage_<basin_id>.gpkg`
 
 ### <ins> Step 4. Forcing Data Download
-The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextGen) forcing_prep tool to donwload atmospheric forcing data.
-  - `mkdir ~/.venv_forcing`
-  - `python -m venv ~/.venv_forcing`
-  - `source ~/.venv_forcing/bin/activate`
-  - `pip install -r extern/CIROH_DL_NextGen/forcing_prep/requirements.txt`. Note: if ran into errors while downding data, try creating venv using `pip install -r doc/env/requirements_forcing.txt`
-  - open `<path_to_sandboxhub>/configs/config_workflow.yaml` [here](configs/config_workflow.yaml) and setup `forcings` block
-  - To download the forcing data run:
-    ```
-    python <path_to_sandboxhub>/sandbox.py -forc
-    ```
-    
-### <ins> Step 5. NGEN-CAL and Plugins Installation
-  - Activate the Python Virtual Environment (Ensure .venv_ngen exists and ngen was built within this environment):
-    ```
-    source <path_to_venv>/.venv_ngen/bin/activate
-    ```
-  - Install NGEN-CAL (Run this command from within the <path_to_sandboxhub> directory):
-    ```
-    pip install "extern/ngen-cal/python/ngen_cal[netcdf]"
-    ```
-  - Install NGEN-CAL Plugins (Run this command from within the <path_to_sandboxhub> directory):
-    ```
-    pip install -e ./extern/ngen_cal_plugins
-    ```
-    
-### <ins>  Step 6. Generate Configuration and Realization Files
+The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextGen) forcing_prep tool to donwload atmospheric forcing data. It uses a Python environment (`~/.venv_forcing`) that is created during the workflow setup step (Step 1). To download the forcing data run:
+```
+   python <path_to_sandboxhub>/sandbox.py -forc
+``` 
+### <ins>  Step 5. Generate Configuration and Realization Files
 To generate configuratioin and realization files, setup the `formulation` block in the workflow config file [here](configs/config_workflow.yaml), and run the following command:
  ```
     python <path_to_sandboxhub>/sandbox.py -conf
  ```
 
-### <ins> Step 7. Run Calibration/Validation Simulations
+### <ins> Step 6. Run Calibration/Validation Simulations
 Setup the `ngen_cal` block in the workflow config file [here](configs/config_workflow.yaml), and run the following command, note this depends on all of the above steps:
  ```
     python <path_to_sandboxhub>/sandbox.py -run
