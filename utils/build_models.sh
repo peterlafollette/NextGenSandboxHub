@@ -1,22 +1,21 @@
 ###############################################################
-# Author : Ahmad Jan Khattak [ahmad.jan.khattak@noaa.gov | September 10, 2024]
+# Author      : Ahmad Jan Khattak [ahmad.jan.khattak@noaa.gov | September 10, 2024]
 # Contributor : Sifan A. Koriche [sakoriche@ua.edu | December 18, 2024]
 
 # If running on AWS EC2 instance, run setup_ec2.sh before bulding models to setup the EC2 instance
 
-# Clone NextGenSandboxHub and NextGen GitHub repositories
-# Step 1: Clone NextGenSandboxHub
-#         - git clone https://github.com/ajkhattak/NextGenSandboxHub && cd NextGenSandboxHub
-# Step 2: Clone NextGen
+# Step 1: Clone NextGen
 #         - git clone https://github.com/NOAA-OWP/ngen && cd ngen
 #         - git submodule update --init --recursive
-# Step 3: Setup bash file
+# Step 2: Setup bash file
 #         - Refer to the instructions here: (utils/setup_ec2.sh, line 23)
 
-# Order of building options
-# 1st build T-ROUTE >> this helps to create t-route based environment which will also be handy for NGEN
-# 2nd build NGEN
-# 3rd build MODELS
+
+# 1st build NGEN
+# 2nd build MODELS
+# 3rd build T-ROUTE
+
+
 ###############################################################
 
 export wkdir=$(pwd)
@@ -25,15 +24,12 @@ cd ${wkdir}
 
 #####################################################
 
-BUILD_TROUTE=OFF
-BUILD_NGEN=OFF
+BUILD_NGEN=ON
 BUILD_MODELS=OFF
+BUILD_TROUTE=OFF
 
-ngen_dir= <path_to_nextgen_repo>  #/Users/ahmadjankhattak/Code/ngen/ngen
+ngen_dir=/Users/ahmadjankhattak/Code/ngen/ngen
 
-# Notes:
-# If vevn_forcing failed or forcing downloader is failing, that could be due to inconsistent
-# versions of packages, try buidling env based on doc/env/venv_forcing.piplist
 #####################################################
 
 build_ngen()
@@ -50,7 +46,7 @@ build_ngen()
 	  -DNGEN_WITH_TESTS=ON \
           -DNGEN_QUIET=ON \
 	  -DNGEN_WITH_MPI=ON \
-	  -DNetCDF_ROOT=/usr/local/lib \
+	  -DNetCDF_ROOT=${NETCDF_ROOT}/lib \
 	  -B ${builddir} \
 	  -S .
     
@@ -68,17 +64,16 @@ build_troute()
     git checkout master
     git pull
 
-    # these are no longer needed as workflow env is already built using the same packages/versions
-    #mkdir ~/vevn_ngen_py3.11
-    #python3.11 -m venv ~/vevn_ngen_py3.11
-    #source ~/vevn_ngen_py3.11/bin/activate
-    #pip install -U pip==24.0
-    #sed -i 's/netcdf4/netcdf4<=1.6.3/g' extern/t-route/requirements.txt
-    #pip install -r extern/t-route/requirements.txt 
     ##hot patch nc config to nf config
     #sed -i 's/nc-config/nf-config/g' src/kernel/reservoir/makefile
 
-    ./compiler.sh no-e
+    if [[ "$(uname)" == "Darwin" ]]; then
+	NETCDF=$(brew --prefix netcdf-fortran)/include LIBRARY_PATH=$(brew --prefix gcc)/lib/gcc/current/:$(brew --prefix)/lib:$LIBRARY_PATH FC=$FC CC=$CC F90=$FC ./compiler.sh no-e
+    else
+	export NETCDF=${NETCDF_ROOT}/include
+	./compiler.sh no-e
+    fi
+
     popd
 }
 
@@ -114,14 +109,15 @@ if [ "$BUILD_NGEN" == "ON" ]; then
     echo "NextGen build: ${BUILD_NGEN}"
     build_ngen
 fi
-if [ "$BUILD_TROUTE" == "ON" ]; then
-    echo "Troute build: ${BUILD_TROUTE}"
-    build_troute
-fi
 if [ "$BUILD_MODELS" == "ON" ]; then
     echo "Models build: ${BUILD_MODELS}"
     build_models
 fi
+if [ "$BUILD_TROUTE" == "ON" ]; then
+    echo "Troute build: ${BUILD_TROUTE}"
+    build_troute
+fi
+
 
 #if [ "$model" == "ngen-cal" ] && [ "$BUILD_CALIB" == "ON" ]; then
 #    git clone https://github.com/NOAA-OWP/ngen-cal extern/${model}
