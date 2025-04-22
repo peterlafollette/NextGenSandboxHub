@@ -40,7 +40,6 @@ formulation :
   models             : "NOM, CFE, T-route"
 
   clean              : ['existing']
-  setup_simulation   : True
   verbosity          : 0
 
   np_per_basin           : 1         # number of processors for basin partitioning

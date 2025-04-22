@@ -1,6 +1,6 @@
 ############################################################################################
 # Author  : Ahmad Jan Khattak
-# Contact : ahmad.jan@noaa.gov
+# Contact : ahmad.jan.khattak@noaa.gov
 # Date    : October 11, 2023 
 ############################################################################################
 
@@ -29,33 +29,45 @@ class Driver:
     def __init__(self, infile, formulations_supported):
         self.colors = helper.colors()
 
-        self.config_workflow = infile
-        with open(infile, 'r') as file:
+        self.workflow_config = infile
+        self.formulations_supported = formulations_supported
+        self.load_config()
+        
+    def load_config(self):
+        with open(self.workflow_config, 'r') as file:
             d = yaml.safe_load(file)
 
         self.workflow_dir = d["workflow_dir"]
-        self.input_dir = d["input_dir"]
-        self.output_dir = Path(d["output_dir"])
-        self.formulations_supported = formulations_supported
+        self.input_dir    = d["input_dir"]
+        self.output_dir   = Path(d["output_dir"])
         
         dformul = d['formulation']
-        self.ngen_dir = dformul["ngen_dir"]
-        self.formulation = dformul['models']
-        self.clean = self.process_clean_input_param(dformul.get('clean', "none"))
-        self.verbosity = dformul.get('verbosity', 0)
+        self.ngen_dir      = dformul["ngen_dir"]
+        self.formulation   = dformul['models']
+        self.clean         = self.process_clean_input_param(dformul.get('clean', "none"))
+        self.verbosity     = dformul.get('verbosity', 0)
         self.basins_in_par = dformul.get('basins_in_par', 1)
+        self.schema_type   = dformul.get('schema_type', "noaa-owp")
+
         self.setup_simulation = dformul.get('setup_simulation', True)
         self.rename_existing_simulation = dformul.get('rename_existing_simulation', "")
-        self.schema_type = dformul.get('schema_type', "noaa-owp")
 
+        # Forcing block
         dforcing = d['forcings']
-        self.forcing_dir = dforcing.get("forcing_dir", "None")
+        
+        self.forcing_time   = dforcing["forcing_time"]
+        self.forcing_format = dforcing.get('forcing_format', '.nc')
+        forcing_start_yr    = pd.Timestamp(self.forcing_time['start_time']).year
+        forcing_end_yr      = pd.Timestamp(self.forcing_time['end_time']).year + 1
+        forcing_dir         = os.path.join(self.input_dir, "{*}", f'data/forcing/{forcing_start_yr}_to_{forcing_end_yr}')
+        self.forcing_dir    = dforcing.get("forcing_dir", forcing_dir)
         self.forcing_format = dforcing.get('forcing_format', '.nc')
 
         self.is_netcdf_forcing = True
         if self.forcing_format == '.csv':
             self.is_netcdf_forcing = False
 
+        # Simulation block
         dsim = d['simulation']
         self.ngen_cal_type = (dsim.get('task_type', 'control')).lower()
 

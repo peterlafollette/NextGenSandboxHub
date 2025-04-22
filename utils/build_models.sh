@@ -24,8 +24,8 @@ cd ${wkdir}
 
 #####################################################
 
-BUILD_NGEN=ON
-BUILD_MODELS=OFF
+BUILD_NGEN=OFF
+BUILD_MODELS=ON
 BUILD_TROUTE=OFF
 
 ngen_dir=/Users/ahmadjankhattak/Code/ngen/ngen
@@ -81,8 +81,13 @@ build_models()
 {
     pushd $ngen_dir
 
-    for model in cfe evapotranspiration SoilFreezeThaw SoilMoistureProfiles LGAR; do
+    for model in noah-owp-modular cfe evapotranspiration SoilFreezeThaw SoilMoistureProfiles LGAR; do
 	rm -rf extern/$model/${builddir}
+	if [ "$model" == "noah-owp-modular" ]; then
+	    git submodule update --remote extern/${model}/${model}
+	    cmake -B extern/${model}/${builddir} -S extern/${model} -DCMAKE_BUILD_TYPE=Release -DNGEN_IS_MAIN_PROJECT=ON
+	    make -C extern/${model}/${builddir}
+	fi
 	if [ "$model" == "cfe" ] || [ "$model" == "SoilFreezeThaw" ] || [ "$model" == "SoilMoistureProfiles" ]; then
 	    git submodule update --remote extern/${model}/${model}
 	    cmake -B extern/${model}/${model}/${builddir} -S extern/${model}/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release
