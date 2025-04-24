@@ -50,7 +50,7 @@ Setup <-function() {
   } else if (length(args) > 1) {
     stop("Please provide only one argument (input.yaml).")
   } else {
-    infile_config <- "<path_to_sandboxhub>/configs/config_workflow.yaml"
+    infile_config <- "<path_to_sandboxhub>/configs/workflow_config.yaml"
   } 
 
   if (!file.exists(infile_config)) {
