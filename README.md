@@ -35,10 +35,10 @@ Ensure R and Rtools are already installed before proceeding. There are two ways 
 ### <ins> Step 3. Hydrofabric Subsetting
   - Dependency: Step 2
   - Download domain (CONUS or oCONUS) from [lynker-spatial](https://www.lynker-spatial.com/data?path=hydrofabric%2Fv2.2%2F), for instance conus/conus_nextgen.gpkg
-  - open `<path_to_sandboxhub>/configs/config_workflow.yaml` [here](configs/config_workflow.yaml) and adjust workflow_dir, input_dir, output_dir, and gpkg_model_params according to your local settings
+  - open `<path_to_sandboxhub>/configs/workflow_config.yaml` [here](configs/workflow_config.yaml) and adjust workflow_dir, input_dir, output_dir, and subsetting according to your local settings
   - Now there are two options to proceed:
       - run `python <path_to_sandboxhub>/sandbox.py -subset`
-      - or open `<path_to_sandboxhub>/src/R/main.R` in RStudio and source on main.R. Note Set file name `infile_config` [here](https://github.com/ajkhattak/basin_workflow/blob/nwm-v4-bm/src/R/main.R#L54) 
+      - or open `<path_to_sandboxhub>/src/R/main.R` in RStudio and source on main.R. Note Set file name `infile_config` [here](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/src/R/main.R#L53) 
     
     Either one will install the hydrofabric and several other libraries, and if everything goes well, a basin geopackage will be subsetted and stored under `<input_dir>/<basin_id>/data/gage_<basin_id>.gpkg`
 
