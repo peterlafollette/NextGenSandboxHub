@@ -48,9 +48,9 @@ The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextG
    python <path_to_sandboxhub>/sandbox.py -forc
 ```
 
-=================================================================================================
-### Note: Steps 5 and 6 require `ngen` build. Follow the instructions here [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) to build ngen and models.
-=================================================================================================
+=====================================================================================
+### Note: Steps 5 and 6 require both the ngen and models builds. Please follow the instructions in the [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) script to build ngen and models.
+=====================================================================================
 
 
 ### <ins>  Step 5. Generate Configuration and Realization Files
