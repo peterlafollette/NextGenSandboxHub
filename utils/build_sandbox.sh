@@ -12,20 +12,30 @@
 
 ###############################################################
 
-BUILD_WORKFLOW=ON
+BUILD_SANDBOX=ON
+# if it is desired to change the virtual env name, it will require one more change to
+# the sandbox.py file (update the env name there as well)
+VENV_SANDBOX=~/.venv_sandbox_py3.11
 
-# Notes:
-# If vevn_forcing failed or forcing downloader is failing, that could be due to inconsistent
-# versions of packages, try buidling env based on doc/env/venv_forcing.piplist
 #####################################################
 
 
-build_workflow()
+build_sandbox()
 {
 
-    mkdir ~/.venv_ngen_py3.11
-    python3.11 -m venv ~/.venv_ngen_py3.11
-    source ~/.venv_ngen_py3.11/bin/activate
+    PYTHON_VERSION="python3.11"
+    
+    # Check if python3.11 is available
+    if ! command -v $PYTHON_VERSION &>/dev/null; then
+        echo "ErrorMsg: $PYTHON_VERSION is not installed or not in your PATH."
+        return 1
+    fi
+    
+    echo "Creating virtual python environment for ngen ($VENV_SANDBOX)"
+    mkdir "$VENV_SANDBOX"
+    $PYTHON_VERSION -m venv "$VENV_SANDBOX"
+    source "$VENV_SANDBOX/bin/activate"
+    
     pip install -U pip==24.0
     
     pip install -r ./utils/requirements.txt
@@ -40,10 +50,13 @@ build_workflow()
     pip install -e ./extern/ngen_cal_plugins
 
     deactivate
+
+    VENV_FORCING=~/.venv_forcing
+
+    mkdir "$VENV_FORCING"
+    $PYTHON_VERSION -m venv "$VENV_FORCING"
+    source "$VENV_FORCING/bin/activate"
     
-    mkdir ~/.venv_forcing
-    python3.11 -m venv ~/.venv_forcing
-    source ~/.venv_forcing/bin/activate
     pip install -U pip==24.0
     pip install -r ./doc/env/requirements_forcing.txt
     # or run the below two steps
@@ -53,9 +66,9 @@ build_workflow()
 }
 
 
-if [ "$BUILD_WORKFLOW" == "ON" ]; then
-    echo "Workflow build: ${BUILD_WORKFLOW}"
-    build_workflow
+if [ "$BUILD_SANDBOX" == "ON" ]; then
+    echo "Building Python Virtual Environments for Sandbox"
+    build_sandbox
 fi
 
 

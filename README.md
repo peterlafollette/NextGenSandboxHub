@@ -1,19 +1,18 @@
 # Next-Generation Framework Sandbox Hub (NextGenSandboxHub)
 [NextGen](https://github.com/NOAA-OWP/ngen), Next-Generation Water Resources Modeling Framework, developed by the NOAA's Office of Water Prediction is a standards-based language- and model-agnostic framework, which allows to run a mosaic of surface and subsurface models in a single basin comprised of 10s-100s sub-catchments. 
 
-## Schematic of the NextGenSandboxHub workflow
+## Schematic of the NextGenSandboxHub Workflow
 
 <div align="center">
 <img src="https://github.com/user-attachments/assets/d06b3cf9-6019-4ebd-86f1-e797b4debbae" style="width:800px; height:400px;"/>
 </div>
 
 ## Configuration
-Note: The workflow assumes that [ngen](https://github.com/NOAA-OWP/ngen) and other models have already been built, including [t-route](https://github.com/NOAA-OWP/t-route). It is also assumed that both ngen and t-route were built within a Python environment named `.venv_ngen`.
 
-### <ins>  Step 1. Build Workflow
+### <ins>  Step 1. Build Sanbox Workflow
   - `git clone https://github.com/ajkhattak/NextGenSandboxHub && cd NextGenSandboxHub`
   - `git submodule update --init`
-  - Run `./utils/build_workflow.sh` (this will install python env required for the workflow, t-route, and ngen)
+  - Run `./utils/build_sandbox.sh` (this will install python env required for the workflow, t-route, and ngen)
   
 ### <ins>  Step 2. Hydrofabric Installation
 Ensure R and Rtools are already installed before proceeding. There are two ways to install the required packages:
@@ -35,7 +34,7 @@ Ensure R and Rtools are already installed before proceeding. There are two ways 
 ### <ins> Step 3. Hydrofabric Subsetting
   - Dependency: Step 2
   - Download domain (CONUS or oCONUS) from [lynker-spatial](https://www.lynker-spatial.com/data?path=hydrofabric%2Fv2.2%2F), for instance conus/conus_nextgen.gpkg
-  - open `<path_to_sandboxhub>/configs/workflow_config.yaml` [here](configs/workflow_config.yaml) and adjust workflow_dir, input_dir, output_dir, and subsetting according to your local settings
+  - open `<path_to_sandboxhub>/configs/sandbox_config.yaml` [here](configs/sandbox_config.yaml) and adjust sandbox_dir, input_dir, output_dir, and subsetting according to your local settings
   - Now there are two options to proceed:
       - run `python <path_to_sandboxhub>/sandbox.py -subset`
       - or open `<path_to_sandboxhub>/src/R/main.R` in RStudio and source on main.R. Note Set file name `infile_config` [here](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/src/R/main.R#L53) 
@@ -52,15 +51,16 @@ The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextG
 ### Note: Steps 5 and 6 require both the ngen and models builds. Please follow the instructions in the [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) script to build ngen and models.
 ====================================================================================
 
+Note: The sandbox workflow assumes that [ngen](https://github.com/NOAA-OWP/ngen) and models including [t-route](https://github.com/NOAA-OWP/t-route) have been built in the Python virtual environment created in Step 1.
 
 ### <ins>  Step 5. Generate Configuration and Realization Files
-To generate configuratioin and realization files, setup the `formulation` block in the workflow config file [here](configs/config_workflow.yaml), and run the following command:
+To generate configuratioin and realization files, setup the `formulation` block in the sandbox config file [here](configs/sandbox_config.yaml), and run the following command:
  ```
     python <path_to_sandboxhub>/sandbox.py -conf
  ```
 
 ### <ins> Step 6. Run Calibration/Validation Simulations
-Setup the `ngen_cal` block in the workflow config file [here](configs/config_workflow.yaml), and run the following command, note this depends on all of the above steps:
+Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_config.yaml), and run the following command, note this depends on all of the above steps:
  ```
     python <path_to_sandboxhub>/sandbox.py -run
  ```

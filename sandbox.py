@@ -16,6 +16,26 @@ workflow_dir = path.parent
 
 from src.python import forcing, driver, runner
 
+
+def CheckSandbox_VENV():
+    VENV_SANDBOX = Path.home() / ".venv_sandbox_py3.11"
+
+    # Check if the virtual environment exists
+    if not VENV_SANDBOX.exists():
+        print(f"Error: NextGen virtual environment {VENV_SANDBOX} not found under home directory...")
+        sys.exit(1)
+
+
+    # Check if the script is running inside that required environment
+    VENV_ACTIVE = Path(sys.prefix)
+    if VENV_ACTIVE.resolve() != VENV_SANDBOX.resolve():
+        print(f"Warning: sandbox.py is not running in the expected Python virtual environment.")
+        print(f"Expected: {VENV_SANDBOX}")
+        print(f"Active:   {VENV_ACTIVE}")
+
+        sys.exit(1)
+
+
 formulations_supported = [
     "NOM,CFE",
     "PET,CFE",
@@ -112,5 +132,8 @@ if __name__ == "__main__":
     if (len(sys.argv) < 2):
         print ("No arguments are provide")
         sys.exit(0)
-    
+
+    # check if expected Python virtual env exists and activated
+    CheckSandbox_VENV()
+
     Sandbox(workflow_config, calib_config)
