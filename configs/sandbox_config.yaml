@@ -1,6 +1,6 @@
 # make sure to install yaml package using install.packages("yaml") if not installed already
 
-workflow_dir  : "/Users/ahmadjankhattak/Code/workflows/NextGenSandboxHub"
+sandbox_dir  : "<path_to_sandbox_dir>/NextGenSandboxHub"
 input_dir     : "<path_to_input_directory>"  # user-specified
 output_dir    : "<path_to_output_directory>" # user-specified
 

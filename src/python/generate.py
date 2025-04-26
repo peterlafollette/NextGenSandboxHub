@@ -18,9 +18,9 @@ from src.python import configuration
 from src.python import realization
 
 class Generate:
-    def __init__(self, workflow_dir, gpkg_file, forcing_dir, ngen_dir, sim_time, formulation,
+    def __init__(self, sandbox_dir, gpkg_file, forcing_dir, ngen_dir, sim_time, formulation,
                  formulation_supported, output_dir, forcing_format, ngen_cal_type, schema):
-        self.workflow_dir = workflow_dir
+        self.sandbox_dir = sandbox_dir
         self.gpkg_file = gpkg_file
         self.forcing_dir = forcing_dir
         self.ngen_dir = ngen_dir
@@ -59,7 +59,7 @@ class Generate:
             print(self.colors.ENDC)
             print("*******************************************")
 
-        ConfigGen = configuration.ConfigurationGenerator(workflow_dir = self.workflow_dir,
+        ConfigGen = configuration.ConfigurationGenerator(sandbox_dir = self.sandbox_dir,
                                                          gpkg_file = self.gpkg_file,
                                                          forcing_dir = self.forcing_dir,
                                                          output_dir = self.output_dir,

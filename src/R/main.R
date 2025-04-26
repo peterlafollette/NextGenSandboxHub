@@ -26,7 +26,7 @@
 
 ################################ SETUP #########################################
 # STEP #1: INSTALL REQUIRED PACKAGES 
-# - set workflow_dir (basin_workflow repository directory)
+# - set sandbox_dir (basin_sandbox repository directory)
 # - set options for installing/reinstalling hydrofabric and other packages 
 # - set dem_infile (defaults to S3 .vrt file)
 # - set output_dir (geopackages and DEM files will be stored here)
@@ -50,7 +50,7 @@ Setup <-function() {
   } else if (length(args) > 1) {
     stop("Please provide only one argument (input.yaml).")
   } else {
-    infile_config <- "<path_to_sandboxhub>/configs/workflow_config.yaml"
+    infile_config <- "<path_to_sandboxhub>/configs/sandbox_config.yaml"
   } 
 
   if (!file.exists(infile_config)) {
@@ -61,15 +61,15 @@ Setup <-function() {
 
   inputs = yaml.load_file(infile_config)
 
-  workflow_dir   <<- inputs$workflow_dir
-  output_dir     <<- inputs$input_dir
-  hf_version     <<- inputs$subsetting$hf_version
-  hf_gpkg_path   <<- inputs$subsetting$hf_gpkg_path
-  nproc          <<- inputs$subsetting$number_processors
+  sandbox_dir   <<- inputs$sandbox_dir
+  output_dir    <<- inputs$input_dir
+  hf_version    <<- inputs$subsetting$hf_version
+  hf_gpkg_path  <<- inputs$subsetting$hf_gpkg_path
+  nproc         <<- inputs$subsetting$number_processors
   
   
-  source(paste0(workflow_dir, "/src/R/install_load_libs.R"))
-  source(glue("{workflow_dir}/src/R/custom_functions.R"))
+  source(paste0(sandbox_dir, "/src/R/install_load_libs.R"))
+  source(glue("{sandbox_dir}/src/R/custom_functions.R"))
   
   compute_divide_attributes <<- get_param(inputs, "subsetting$compute_divide_attributes", FALSE)
   

@@ -33,12 +33,12 @@ setup <-function() {
   
   inputs = yaml.load_file(infile_config)
 
-  workflow_dir      <<- inputs$workflow_dir
+  sandbox_dir      <<- inputs$sandbox_dir
   output_dir        <<- inputs$output_dir
   reinstall_hydrofabric <<- inputs$gpkg_model_params$reinstall_hydrofabric
   reinstall_arrow   <<- inputs$gpkg_model_params$reinstall_arrow
 
-  source(paste0(workflow_dir, "/src_r/install_load_libs.R"))
+  source(paste0(sandbox_dir, "/src_r/install_load_libs.R"))
   
   if (!file.exists(output_dir)) {
     print(glue("Output directory does not exist, provided: {output_dir}"))

@@ -46,7 +46,7 @@ class Runner:
         with open(self.config_workflow, 'r') as file:
             self.config = yaml.safe_load(file)
 
-        self.workflow_dir = self.config["workflow_dir"]
+        self.sandbox_dir = self.config["sandbox_dir"]
         self.input_dir = self.config["input_dir"]
         self.output_dir = Path(self.config["output_dir"])
 
@@ -184,7 +184,7 @@ class Runner:
                                                         num_proc=np_per_basin_local)
             
             ConfigGen.write_calib_input_files()
-            run_command = f"python {self.workflow_dir}/src/python/validation.py configs/ngen-cal_valid_config.yaml"
+            run_command = f"python {self.sandbox_dir}/src/python/validation.py configs/ngen-cal_valid_config.yaml"
             result = subprocess.call(run_command, shell=True)
 
     

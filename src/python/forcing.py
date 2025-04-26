@@ -28,7 +28,7 @@ class ForcingProcessor:
     def load_config(self):
         with open(self.config_file, 'r') as file:
             self.config = yaml.safe_load(file)
-        self.workflow_dir = self.config["workflow_dir"]
+        self.sandbox_dir = self.config["sandbox_dir"]
         self.input_dir = self.config["input_dir"]
         self.dsim = self.config['formulation']
         self.verbosity = self.dsim.get('verbosity', 0)
@@ -71,7 +71,7 @@ class ForcingProcessor:
 
         forcing_config = self.write_forcing_input_files(forcing_dir=fdir)
 
-        run_cmd = f'python {self.workflow_dir}/extern/CIROH_DL_NextGen/forcing_prep/generate.py {forcing_config}'
+        run_cmd = f'python {self.sandbox_dir}/extern/CIROH_DL_NextGen/forcing_prep/generate.py {forcing_config}'
 
         venv_bin = os.path.join(self.forcing_venv_dir, 'bin')
 
@@ -99,7 +99,7 @@ class ForcingProcessor:
 
     def write_forcing_input_files(self, forcing_dir):
 
-        forcing_basefile = os.path.join(self.workflow_dir, "configs/basefiles/config_aorc.yaml")
+        forcing_basefile = os.path.join(self.sandbox_dir, "configs/basefiles/config_aorc.yaml")
 
         if not os.path.exists(forcing_basefile):
             sys.exit(f"Sample forcing yaml file does not exist, provided is {forcing_basefile}")

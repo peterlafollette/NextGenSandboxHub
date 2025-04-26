@@ -29,10 +29,10 @@ except:
 os_name = platform.system()
 
 class ConfigurationGenerator:
-    def __init__(self, workflow_dir, gpkg_file, forcing_dir, output_dir,
+    def __init__(self, sandbox_dir, gpkg_file, forcing_dir, output_dir,
                  ngen_dir, formulation, simulation_time,
                  verbosity, ngen_cal_type, schema_type = None):
-        self.workflow_dir = workflow_dir
+        self.sandbox_dir = sandbox_dir
         self.gpkg_file = gpkg_file
         self.forcing_dir = forcing_dir
         self.output_dir = output_dir
@@ -46,7 +46,7 @@ class ConfigurationGenerator:
         self.schema_type = schema_type
 
         if "CFE" in self.formulation:
-            with open(os.path.join(self.workflow_dir, "configs/basefiles", "custom.yaml"), 'r') as file:
+            with open(os.path.join(self.sandbox_dir, "configs/basefiles", "custom.yaml"), 'r') as file:
                 dcfe = yaml.safe_load(file)['models']['CFE']
 
             self.surface_runoff_scheme = dcfe['surface_runoff_scheme']
@@ -159,7 +159,7 @@ class ConfigurationGenerator:
         str_sub ="cp -r "+ self.soil_params_NWM_dir + " %s"%nom_dir
         out=subprocess.call(str_sub,shell=True)
         
-        nom_basefile = os.path.join(self.workflow_dir, "configs/basefiles/config_noahowp.input")
+        nom_basefile = os.path.join(self.sandbox_dir, "configs/basefiles/config_noahowp.input")
 
         if not os.path.exists(nom_basefile):
             sys.exit(f"Sample NoahOWP config file does not exist, provided is {nom_basefile}")
@@ -217,7 +217,7 @@ class ConfigurationGenerator:
         cfe_dir = os.path.join(self.output_dir, "configs/cfe")
         self.create_directory(cfe_dir)
 
-        cfe_basefile = os.path.join(self.workflow_dir, "configs/basefiles/config_cfe.txt")
+        cfe_basefile = os.path.join(self.sandbox_dir, "configs/basefiles/config_cfe.txt")
 
         if not os.path.exists(cfe_basefile):
             sys.exit(f"Sample CFE config file does not exist, provided is {cfe_basefile}")
@@ -561,7 +561,7 @@ class ConfigurationGenerator:
 
     def write_troute_input_files(self):
 
-        troute_basefile = os.path.join(self.workflow_dir, "configs/basefiles/config_troute.yaml")
+        troute_basefile = os.path.join(self.sandbox_dir, "configs/basefiles/config_troute.yaml")
         troute_dir = os.path.join(self.output_dir,"configs")
         gpkg_name = os.path.basename(self.gpkg_file).split(".")[0]
 
@@ -751,7 +751,7 @@ class ConfigurationCalib:
         if not os.path.exists(self.ngen_cal_basefile):
             sys.exit(f"Sample calib yaml file does not exist, provided is {self.ngen_cal_basefile}")
 
-        basin_workflow_dir = os.path.dirname(os.path.dirname(self.ngen_cal_basefile))
+        basin_sandbox_dir = os.path.dirname(os.path.dirname(self.ngen_cal_basefile))
         gpkg_name = os.path.basename(self.gpkg_file).split(".")[0]
 
         with open(self.ngen_cal_basefile, 'r') as file:

@@ -25,8 +25,8 @@ cd ${wkdir}
 #####################################################
 
 BUILD_NGEN=OFF
-BUILD_MODELS=ON
-BUILD_TROUTE=OFF
+BUILD_MODELS=OFF
+BUILD_TROUTE=ON
 
 ngen_dir=/Users/ahmadjankhattak/Code/ngen/ngen
 

@@ -29,15 +29,15 @@ class Driver:
     def __init__(self, infile, formulations_supported):
         self.colors = helper.colors()
 
-        self.workflow_config = infile
+        self.sandbox_config = infile
         self.formulations_supported = formulations_supported
         self.load_config()
         
     def load_config(self):
-        with open(self.workflow_config, 'r') as file:
+        with open(self.sandbox_config, 'r') as file:
             d = yaml.safe_load(file)
 
-        self.workflow_dir = d["workflow_dir"]
+        self.sandbox_dir = d["sandbox_dir"]
         self.input_dir    = d["input_dir"]
         self.output_dir   = Path(d["output_dir"])
         
@@ -184,7 +184,7 @@ class Driver:
             return
 
         # Call generate files
-        driver_ = generate.Generate(workflow_dir = self.workflow_dir,
+        driver_ = generate.Generate(sandbox_dir = self.sandbox_dir,
                                     gpkg_file = gpkg_dir,
                                     forcing_dir = f_dir,
                                     ngen_dir = self.ngen_dir,
@@ -254,11 +254,11 @@ class Driver:
                 sys.exit("Quiting...")
 
         assert os.path.exists(self.output_dir)
-        assert os.path.exists(self.workflow_dir)
+        assert os.path.exists(self.sandbox_dir)
         assert os.path.exists(self.ngen_dir)
 
-        if not os.path.exists(os.path.join(self.workflow_dir, "src/python")):
-            sys.exit("check `workflow_dir`, it should be the parent directory of `src/python` directory")
+        if not os.path.exists(os.path.join(self.sandbox_dir, "src/python")):
+            sys.exit("check `sandbox_dir`, it should be the parent directory of `src/python` directory")
 
         all_dirs = glob.glob(os.path.join(self.input_dir, '*/'), recursive=True)
         self.gpkg_dirs = [Path(g) for g in all_dirs if os.path.exists(os.path.join(g, 'data')) and glob.glob(os.path.join(g, 'data', '*.gpkg'))]
