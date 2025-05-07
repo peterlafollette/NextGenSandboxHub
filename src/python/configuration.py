@@ -725,6 +725,7 @@ class ConfigurationCalib:
         self.num_proc = num_proc
         self.ngen_cal_basefile = ngen_cal_basefile
         self.troute_output_file = troute_output_file
+        self.restart_dir = restart_dir
 
     def get_flowpath_attributes(self):
 
@@ -815,12 +816,15 @@ class ConfigurationCalib:
             }
             d['model']['val_params'] = val_params
 
-        elif self.ngen_cal_type == 'restart':
-            df_par = pd.read_parquet(os.path.join(restart_dir, "calib_param_df_state.parquet"))
-            df_params = pd.read_csv(os.path.join(restart_dir, "best_params.txt"), header=None)
+        if (self.ngen_cal_type == 'restart' or self.ngen_cal_type == "validation"):
+
+            state_file = glob.glob(str(Path(self.output_dir) / "*_worker" / "*_parameter_df_state.parquet"))[0]
+            df_parq = pd.read_parquet(state_file)
+            df_params = pd.read_csv(Path(state_file).parent / "best_params.txt", header = None)
+
             best_itr = str(int(df_params.values[1]))
 
-            best_params_set = df_par[best_itr]
+            best_params_set = df_parq[best_itr]
             calib_params = best_params_set.index.to_list()
 
             for block in d:
