@@ -451,10 +451,10 @@ class ConfigurationGenerator:
                                 sft_coupled=False):
         
         lasam_dir = os.path.join(self.output_dir,"configs/lasam")
-        create_directory(lasam_dir)
+        self.create_directory(lasam_dir)
 
-        lasam_params = os.path.join(self.ngen_dir,"extern/LGAR-C/LGAR-C/data/vG_params_stat_nom_ordered.dat")
-        str_sub ="cp -r "+ lasam_params + " %s"%lasam_dir
+        lasam_params_file = os.path.join(self.ngen_dir,"extern/LASAM/LASAM/data/vG_params_stat_nom_ordered.dat")
+        str_sub ="cp -r "+ lasam_params_file + " %s"%lasam_dir
         out=subprocess.call(str_sub,shell=True)
 
         sft_calib = "False"
@@ -462,7 +462,7 @@ class ConfigurationGenerator:
         
         lasam_params_base = [
             'verbosity=none',
-            f'soil_params_file={soil_param_file}',
+            f'soil_params_file={lasam_params_file}',
             'layer_thickness=200.0[cm]',
             'initial_psi=2000.0[cm]',
             'timestep=3600[sec]',

@@ -81,6 +81,9 @@ class Generate:
         if "CFE" in self.formulation:
             ConfigGen.write_cfe_input_files()
 
+        if "LASAM" in self.formulation:
+            ConfigGen.write_lasam_input_files()
+
         if "T-route" in self.formulation_in or "t-route" in self.formulation_in:
             ConfigGen.write_troute_input_files()
         

@@ -1,6 +1,6 @@
 ############################################################################################
-# Author  : Ahmad Jan
-# Contact : ahmad.jan@noaa.gov
+# Author  : Ahmad Jan Khattak
+# Contact : ahmad.jan.khattak@noaa.gov
 # Date    : September 28, 2023
 ############################################################################################
 
@@ -9,9 +9,6 @@ The script generates realization files for a given model coupling option
  - inputs  : see main function for inputs (taken as arguments)
  - outputs : writes nextgen realization file for the basin
 """
-
-
-
 
 
 import os
@@ -49,22 +46,22 @@ class RealizationGenerator:
 
         cfe_dir = os.path.join(self.output_dir, "configs", "cfe")
         if 'CFE-S' in self.formulation and not os.path.exists(cfe_dir):
-            print(f"cfe config files directory does not exist. {cfe_dir}")
+            print(f"CFE config files directory does not exist. {cfe_dir}")
             sys.exit(0)
 
         sft_dir = os.path.join(self.output_dir, "configs", "sft")
         if 'SFT' in self.formulation and not os.path.exists(sft_dir):
-            print(f"cfe config files directory does not exist. {sft_dir}")
+            print(f"SFT config files directory does not exist. {sft_dir}")
             sys.exit(0)
 
         smp_dir = os.path.join(self.output_dir, "configs", "smp")
         if 'SMP' in self.formulation and not os.path.exists(smp_dir):
-            print(f"cfe config files directory does not exist. {smp_dir}")
+            print(f"SMP config files directory does not exist. {smp_dir}")
             sys.exit(0)
 
         lasam_dir = os.path.join(self.output_dir, "configs", "lasam")
-        if 'LGAR' in self.formulation and not os.path.exists(lasam_dir):
-            print(f"cfe config files directory does not exist. {lasam_dir}")
+        if 'LASAM' in self.formulation and not os.path.exists(lasam_dir):
+            print(f"LASAM config files directory does not exist. {lasam_dir}")
             sys.exit(0)
             
     
@@ -76,7 +73,7 @@ class RealizationGenerator:
         ext = "lib*.so" if "linux" in platform else "lib*.dylib"
 
         for m in models:
-            if m in ['SoilFreezeThaw', 'cfe', 'SoilMoistureProfiles', 'LASAM', 'LGAR-C', 'sloth', 'evapotranspiration', 'noah-owp-modular', 'topmodel']:
+            if m in ['SoilFreezeThaw', 'cfe', 'SoilMoistureProfiles', 'LASAM', 'sloth', 'evapotranspiration', 'noah-owp-modular', 'topmodel']:
                 path_m = os.path.join(os.path.join(extern_path, m), "cmake_build") if m in ['sloth', 'noah-owp-modular', 'topmodel'] else os.path.join(os.path.join(extern_path, m, m), "cmake_build")
                 if os.path.exists(path_m):
                     exe_m = glob.glob(os.path.join(path_m, ext))
@@ -250,13 +247,14 @@ class RealizationGenerator:
         return block
 
     def get_lasam_block(self):
+        #note the model_type_name should be LGAR as this name is currently supported by ngen-cal for calibration
         block = {
             "name": "bmi_c++",
             "params": {
                 "name": "bmi_c++",
                 "model_type_name": "LGAR",
                 "main_output_variable": "precipitation_rate",
-                "library_file": self.lib_files['LASAM'] if "LASAM" in self.lib_files else self.lib_files['LGAR-C'],
+                "library_file": self.lib_files['LASAM'],
                 "init_config": os.path.join(self.config_dir, 'lasam/lasam_config_{{id}}.txt'),
                 "allow_exceed_end_time": True,
                 "uses_forcing_file": False,
@@ -266,10 +264,12 @@ class RealizationGenerator:
                 }
             }
         }
-        if "nom" in self.coupled_models:
+        
+        if "NOM" in self.formulation:
             block["params"]["variables_names_map"]["precipitation_rate"] = "QINSUR"
-        if "pet" not in self.coupled_models:
+        if "PET" not in self.formulation:
             block["params"]["variables_names_map"]["potential_evapotranspiration_rate"] = "EVAPOTRANS"
+
         return block
 
     def get_sloth_block(self):
