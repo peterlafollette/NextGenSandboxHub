@@ -67,7 +67,10 @@ def get_schema_model_attributes(gdf_model):
         if 'elevation' in d:
             df['elevation_mean'] = d
 
-        if 'circ_mean.aspect' in d:
+        if 'circ_mean.aspect' in d: ##for hydrofabric v 2.2
+            df['aspect_mean'] = d
+
+        if 'aspect_c_mean' in d: ##for hydrofabric v 2.1.1
             df['aspect_mean'] = d
 
         if 'twi'in d:

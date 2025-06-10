@@ -69,9 +69,9 @@ class ConfigurationGenerator:
             gdf_soil = gpd.read_file(self.gpkg_file, layer='divide-attributes')
         except:
             try:
-                gdf_soil = gpd.read_file(self.gpkg_file, layer='model_attributes')
+                gdf_soil = gpd.read_file(self.gpkg_file, layer='model-attributes')
             except:
-                print("layer 'divide-attributes or model_attributes does not exist!'")
+                print("layer 'divide-attributes or model-attributes does not exist!'")
                 sys.exit(1)
 
         gdf_soil.set_index("divide_id", inplace=True)

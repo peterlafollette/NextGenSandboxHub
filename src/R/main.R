@@ -75,7 +75,8 @@ Setup <-function() {
   
   # dem_input_file        <<- get_param(inputs, "subsettings$dem_input_file", "s3://lynker-spatial/gridded-resources/dem.vrt")
   # Newer DEM, better for oCONUS and other previously problematic basins
-  dem_input_file  <<- get_param(inputs, "subsetting$dem_input_file", "s3://lynker-spatial/gridded-resources/USGS_seamless_13.vrt")
+  # dem_input_file  <<- get_param(inputs, "subsetting$dem_input_file", "s3://lynker-spatial/gridded-resources/USGS_seamless_13.vrt")
+  dem_input_file  <<- get_param(inputs, "subsetting$dem_input_file", "/Users/peterlafollette/CIROH_project/USGS_seamless_13.vrt")
 
   dem_output_dir  <<- get_param(inputs, "subsetting$dem_output_dir", "")
   

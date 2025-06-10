@@ -1,28 +1,29 @@
 # make sure to install yaml package using install.packages("yaml") if not installed already
 
-sandbox_dir  : "<path_to_sandbox_dir>/NextGenSandboxHub"
-input_dir     : "<path_to_input_directory>"  # user-specified
-output_dir    : "<path_to_output_directory>" # user-specified
+sandbox_dir  : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
+input_dir     : "/Users/peterlafollette/CIROH_project/in"  # user-specified
+output_dir    : "/Users/peterlafollette/CIROH_project/out" # user-specified
 
 
 ########################################################################
 # Subset a basin using hydrofabric; see src/R/main.R for further details
 subsetting :
-  hf_version               : "2.2" # Only enter version number, e.g. "2.2" or "2.1.1"
+  hf_version               : "2.1.1" # Only enter version number, e.g. "2.2" or "2.1.1"
   # Ensure that this gpkg matches the hf_version specified above:
-  hf_gpkg_path             : "<path_to>/conus_nextgen.gpkg"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
-  dem_output_dir           : "<path_to>/dem" # create `dem` directory yourself # output
+  hf_gpkg_path             : "/Users/peterlafollette/CIROH_project/conus_nextgen.gpkg"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
+  dem_output_dir           : "/Users/peterlafollette/CIROH_project/in/dem" # create `dem` directory yourself # output
   number_processors        : 1
+  compute_divide_attributes: true #necessary if using hydrofabric v 2.1.1, will cause an error if using hydrofabric v 2.2
 
   # Note: only gage_ids that fall within the domain of the hydrofabric listed above will be subsetted
   options :
     use_gage_id :
-      use_gage_id  : TRUE
+      use_gage_id  : FALSE
       gage_ids     : "01105000" #for instance, ["01105000"]
     use_gage_file :
-      use_gage_file : FALSE
-      gage_file     : "/Users/laurenbolotin/Lauren/benchmark/benchmark2.0_final/rfc_ids_clean_conus.csv"
-      column_name   : "USGS.ID"
+      use_gage_file : TRUE
+      gage_file     : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub/basin_IDs/basin_IDs.csv"
+      column_name   : "STAID"
     use_gpkg :
       use_gpkg  : FALSE
       gpkg_dir  : "/Users/ahmadjan/Core/SimulationsData/projects/ngen-bm/test/gpkgs"
@@ -32,12 +33,13 @@ subsetting :
 #forcing data is stored under <input_dir>/gage_id/data/forcing
 forcings : 
   forcing_format     : ".nc"
-  forcing_time       : {"start_time" : "2016-10-01 00:00:00", "end_time" : "2017-09-30 23:00:00"}
+  forcing_time       : {"start_time" : "2015-10-01 00:00:00", "end_time" : "2015-11-30 23:00:00"}
 
 ########################################################################
 formulation :
-  ngen_dir           : "<path_to_ngen_dir>" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
+  ngen_dir           : "/Users/peterlafollette/CIROH_project/ngen" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
   models             : "NOM, CFE, T-route"
+  # models             : "PET, LASAM, T-route"
 
   clean              : ['existing']
   verbosity          : 0
@@ -47,8 +49,9 @@ formulation :
   basins_in_par          : 1         # use for both config files and simulations
 
 simulation :
-  task_type : "<pick_option>" # calibvalid, calibration, validation, restart, control
-  calibration_time : {"start_time" : "2016-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+  task_type : "control" # calibvalid, calibration, validation, restart, control
+  simulation_time  : {"start_time" : "2015-10-02 00:00:00", "end_time" : "2015-11-29 23:00:00"}
+  calibration_time : {"start_time" : "2017-10-01 00:00:00", "end_time" : "2017-12-31 23:00:00"}
   calib_eval_time  : {"start_time" : "2017-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
   validation_time  : {"start_time" : "2010-11-22 14:00:00", "end_time" : "2010-12-23 02:00:00"}
   valid_eval_time  : {"start_time" : "2010-11-23 14:00:00", "end_time" : "2010-12-23 02:00:00"}
