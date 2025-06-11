@@ -3,6 +3,7 @@
 # @author Lauren Bolotin
 # @email lauren.bolotin@noaa.gov
 # @date  December 22, 2023
+# minor edit from Peter La Follette (plafollette@lynker.com) May 2025
 
 # The script downloads geopackge(s) given USGS gauge id(s) (also can read gpkg from the disk)
 # Computes TWI, GIUH, Nash cascade parameters, and extracts model attributes from source,

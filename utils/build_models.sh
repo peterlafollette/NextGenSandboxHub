@@ -1,6 +1,7 @@
 ###############################################################
 # Author      : Ahmad Jan Khattak [ahmad.jan.khattak@noaa.gov | September 10, 2024]
 # Contributor : Sifan A. Koriche [sakoriche@ua.edu | December 18, 2024]
+# minor edits from Peter La Follette [plafollette@lynker.com | May 2025]
 
 # If running on AWS EC2 instance, run setup_ec2.sh before bulding models to setup the EC2 instance
 
