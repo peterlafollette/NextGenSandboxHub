@@ -26,8 +26,8 @@ cd ${wkdir}
 #####################################################
 
 BUILD_NGEN=OFF
-BUILD_MODELS=OFF
-BUILD_TROUTE=ON
+BUILD_MODELS=ON
+BUILD_TROUTE=OFF
 
 ngen_dir=/Users/peterlafollette/CIROH_project/ngen
 
@@ -143,7 +143,7 @@ build_models()
 {
     pushd $ngen_dir
 
-    for model in noah-owp-modular cfe evapotranspiration SoilFreezeThaw SoilMoistureProfiles LGAR; do
+    for model in noah-owp-modular cfe evapotranspiration SoilFreezeThaw SoilMoistureProfiles LGAR-C; do
 	rm -rf extern/$model/${builddir}
 	if [ "$model" == "noah-owp-modular" ]; then
 	    git submodule update --remote extern/${model}/${model}
@@ -156,10 +156,16 @@ build_models()
 	    make -C extern/${model}/${model}/${builddir}
 	fi
 	
-	if [ "$model" == "LGAR" ]; then
-	    git clone https://github.com/NOAA-OWP/LGAR-C extern/${model}/${model}
-	    cmake -B extern/${model}/${model}/${builddir} -S extern/${model}/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release
-	    make -C extern/${model}/${model}/${builddir}
+	if [ "$model" == "LGAR-C" ]; then
+        # Remove the existing LGAR directory if it exists
+        if [ -d "extern/${model}" ]; then
+            echo "Removing existing LGAR directory at extern/${model}"
+            rm -rf extern/${model}
+        fi
+	    # git clone https://github.com/NOAA-OWP/LGAR-C extern/${model}/${model}
+        git clone https://github.com/peterlafollette/LGAR-C -b preferential_flow extern/${model}
+	    cmake -B extern/${model}/${builddir} -S extern/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-I/opt/homebrew/include" -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib"
+	    make -C extern/${model}/${builddir}
 	fi
 	if [ "$model" == "evapotranspiration" ]; then
 	    git submodule update --remote extern/${model}/${model}
