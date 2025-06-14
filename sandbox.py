@@ -131,7 +131,7 @@ def Sandbox(sandbox_config, calib_config):
                 try:
                     # Read gage IDs from provided list
                     gage_ids_df = pd.read_csv(gage_list_path, dtype=str)
-                    gage_ids = set(gage_ids_df['STAID'].astype(str).str.strip())
+                    gage_ids = set(gage_ids_df['gage_id'].astype(str).str.strip())
 
                     # Read basins_passed.csv
                     basins_df = pd.read_csv(passed_basins_csv, dtype=str)
