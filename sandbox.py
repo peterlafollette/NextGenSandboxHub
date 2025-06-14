@@ -9,6 +9,7 @@ import subprocess
 import yaml
 import argparse
 from pathlib import Path
+import pandas as pd
 
 path = Path(sys.argv[0]).resolve()
 sandbox_dir = path.parent
@@ -118,6 +119,40 @@ def Sandbox(sandbox_config, calib_config):
                         print(f"Warning: Could not create troute dir: {troute_path} - {e}")
                 disable_spotlight_indexing(troute_path)
 
+
+            # Create a filtered basins_passed_custom.csv file
+            import pandas as pd
+
+            passed_basins_csv = output_base / "basins_passed.csv"
+            custom_csv = output_base / "basins_passed_custom.csv"
+            gage_list_path = sandbox_dir / "basin_IDs" / "basin_IDs.csv"
+
+            if passed_basins_csv.exists() and gage_list_path.exists():
+                try:
+                    # Read gage IDs from provided list
+                    gage_ids_df = pd.read_csv(gage_list_path, dtype=str)
+                    gage_ids = set(gage_ids_df['STAID'].astype(str).str.strip())
+
+                    # Read basins_passed.csv
+                    basins_df = pd.read_csv(passed_basins_csv, dtype=str)
+
+                    # Determine matching column name in basins_passed.csv
+                    possible_id_cols = ["STAID", "gage_id", "gageID", "id"]
+                    matching_col = next((col for col in possible_id_cols if col in basins_df.columns), None)
+
+                    if matching_col is None:
+                        print(f"Warning: No matching gage ID column found in {passed_basins_csv}")
+                    else:
+                        filtered_df = basins_df[basins_df[matching_col].astype(str).isin(gage_ids)]
+                        filtered_df.to_csv(custom_csv, index=False)
+                        print(f"Filtered basins_passed_custom.csv created at {custom_csv} with {len(filtered_df)} basins.")
+                except Exception as e:
+                    print(f"Warning: Failed to create filtered basins_passed_custom.csv - {e}")
+            else:
+                if not passed_basins_csv.exists():
+                    print(f"Warning: basins_passed.csv not found at {passed_basins_csv}")
+                if not gage_list_path.exists():
+                    print(f"Warning: basin_IDs.csv not found at {gage_list_path}")
 
 
         

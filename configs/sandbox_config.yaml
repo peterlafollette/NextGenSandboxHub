@@ -38,8 +38,8 @@ forcings :
 ########################################################################
 formulation :
   ngen_dir           : "/Users/peterlafollette/CIROH_project/ngen" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
-  models             : "NOM, CFE, T-route"
-  # models             : "PET, LASAM, T-route"
+  # models             : "NOM, CFE, T-route"
+  models             : "PET, LASAM, T-route"
 
   clean              : ['existing']
   verbosity          : 0
