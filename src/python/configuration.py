@@ -452,31 +452,102 @@ class ConfigurationGenerator:
                                 sft_coupled=False):
         
         lasam_dir = os.path.join(self.output_dir,"configs/lasam")
-        self.create_directory(lasam_dir)
+        #create_directory(lasam_dir)
+        self.create_directory(lasam_dir) ###new code
 
-        lasam_params_file = os.path.join(self.ngen_dir,"extern/LASAM/LASAM/data/vG_params_stat_nom_ordered.dat")
-        str_sub ="cp -r "+ lasam_params_file + " %s"%lasam_dir
+        # lasam_params = os.path.join(self.ngen_dir,"extern/LGAR-C/LGAR-C/data/vG_params_stat_nom_ordered.dat")
+        lasam_params = os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", "vG_default_params_HYDRUS_frac.dat")
+        soil_param_file = lasam_params
+        str_sub ="cp -r "+ lasam_params + " %s"%lasam_dir
         out=subprocess.call(str_sub,shell=True)
 
         sft_calib = "False"
         soil_z = "10.0,15.0,18.0,23.0,29.0,36.0,44.0,55.0,69.0,86.0,107.0,134.0,166.0,207.0,258.0,322.0,401.0,500.0,600.0"
         
-        lasam_params_base = [
+        lasam_params_base = [ ###original
             'verbosity=none',
-            f'soil_params_file={lasam_params_file}',
-            'layer_thickness=200.0[cm]',
-            'initial_psi=2000.0[cm]',
+            f'soil_params_file={soil_param_file}',
+            'layer_thickness=10,190.0[cm]',
+            'initial_psi=4000.0[cm]',
             'timestep=3600[sec]',
             'endtime=1000000000.0[d]',
             'forcing_resolution=3600[sec]',
             'ponded_depth_max=0[cm]',
-            'use_closed_form_G=false',
+            'use_closed_form_G=true',
             'layer_soil_type=',
+            'max_valid_soil_types=25',
             'wilting_point_psi=15495.0[cm]',
             'field_capacity_psi=340.9[cm]',
             'adaptive_timestep=true',
-            'giuh_ordinates='
+            'giuh_ordinates=',
+            'a=0.0001',
+            'b=3.0',
+            'frac_to_GW=0.25',
+            'PET_affects_precip=false',
+            'spf_factor=0.9',
+            'allow_flux_caching=true'
+
         ]
+
+        # lasam_params_base = [ ###just for testing what if there is no GW
+        #     'verbosity=none',
+        #     f'soil_params_file={soil_param_file}',
+        #     'layer_thickness=10,190.0[cm]',
+        #     'initial_psi=4000.0[cm]',
+        #     'timestep=3600[sec]',
+        #     'endtime=1000000000.0[d]',
+        #     'forcing_resolution=3600[sec]',
+        #     'ponded_depth_max=0[cm]',
+        #     'use_closed_form_G=true',
+        #     'layer_soil_type=',
+        #     'max_valid_soil_types=25',
+        #     'wilting_point_psi=15495.0[cm]',
+        #     'field_capacity_psi=340.9[cm]',
+        #     'adaptive_timestep=true',
+        #     'giuh_ordinates=',
+        #     'a=0.0',
+        #     'b=0.0',
+        #     'frac_to_GW=0.0',
+        #     'PET_affects_precip=false',
+        #     'spf_factor=0.0'
+        # ]
+
+###original version
+        soil_data_base = [
+            '"Texture	        theta_r	theta_e	alpha (cm^-1)	n	    Ks (cm/h)   theta_r_f	theta_e_f	alpha_f (cm^-1)	n_f	    Ks_f (cm/h)"',
+            '"sand"	            0.045	0.43	0.145	        2.68	29.7       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"loamy_sand"	    0.057	0.41	0.124	        2.28	14.5917    0.01	        0.7         0.1	            2.0	    100.0',
+            '"sandy_loam"	    0.065	0.41	0.075	        1.89	4.42083    0.01	        0.7	        0.1	            2.0	    100.0',
+            '"loam"	        	0.078	0.43	0.036	        1.56	1.04       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"silt"	        	0.034	0.46	0.016	        1.37	0.25       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"silt_loam"	        0.067	0.45	0.02	        1.41	0.45       0.01	        0.7         0.1	            2.0	    100.0',
+            '"sandy_clay_loam"	0.1	    0.39	0.059	        1.48	1.31       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"clay_loam"	        0.095	0.41	0.019	        1.31	0.26       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"silty_clay_loam"	0.089	0.43	0.01	        1.23	0.07       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"sandy_clay"	    0.1	    0.38	0.027	        1.23	0.12       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"silty_clay"		0.07	0.36	0.005	        1.09	0.02       0.01	        0.7	        0.1	            2.0	    100.0',
+            '"clay"	        	0.068	0.38	0.008	        1.09	0.2        0.01	        0.7	        0.1	            2.0	    100.0',
+        ]
+
+###edited version that guarantees at least some runoff
+        # soil_data_base = [
+        #     '"Texture	        theta_r	theta_e	alpha (cm^-1)	n	    Ks (cm/h)   theta_r_f	theta_e_f	alpha_f (cm^-1)	n_f	    Ks_f (cm/h)"',
+        #     '"sand"	            0.045	0.43	0.145	        2.68	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"loamy_sand"	    0.057	0.41	0.124	        2.28	0.01    0.01	        0.7         0.1	            2.0	    100.0',
+        #     '"sandy_loam"	    0.065	0.41	0.075	        1.89	0.01    0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"loam"	        	0.078	0.43	0.036	        1.56	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"silt"	        	0.034	0.46	0.016	        1.37	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"silt_loam"	    0.067	0.45	0.02	        1.41	0.01       0.01	        0.7         0.1	            2.0	    100.0',
+        #     '"sandy_clay_loam"	0.1	    0.39	0.059	        1.48	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"clay_loam"	    0.095	0.41	0.019	        1.31	0.01      0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"silty_clay_loam"	0.089	0.43	0.01	        1.23	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"sandy_clay"	    0.1	    0.38	0.027	        1.23	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"silty_clay"		0.07	0.36	0.005	        1.09	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        #     '"clay"	        	0.068	0.38	0.008	        1.09	0.01       0.01	        0.7	        0.1	            2.0	    100.0',
+        # ]
+
+        print("lasam_params_base: ")
+        print(lasam_params_base)
 
         if sft_coupled:
             lasam_params_base.append('sft_coupled=true')
@@ -491,14 +562,38 @@ class ConfigurationGenerator:
         soil_type_loc = lasam_params_base.index("layer_soil_type=")
             
         giuh_loc_id = lasam_params_base.index("giuh_ordinates=")
+
+        soil_param_file_loc_id = lasam_params_base.index(f'soil_params_file={soil_param_file}',)
             
 
         for catID in self.catids:
+
+            cat_name = 'cat-' + str(catID)
+
+            soil_data = soil_data_base.copy()
+
+            fname_soil = f'soil_{cat_name}.dat'
+
             cat_name = 'cat-' + str(catID)
             fname = cat_name + '*.txt'
 
             lasam_params = lasam_params_base.copy()
-            lasam_params[soil_type_loc] += str(self.gdf['ISLTYP'][cat_name])
+            current_soil_type = int(str(self.gdf['ISLTYP'][cat_name]))
+            if current_soil_type<1:
+                current_soil_type = 1
+            if current_soil_type>12:
+                current_soil_type = 12
+            lasam_params[soil_type_loc] += str(current_soil_type)
+            top_soil_type = int(self.gdf['ISLTYP'][cat_name])
+            next_soil_type = top_soil_type + 2
+            if (next_soil_type>12):
+                next_soil_type = 12
+            if (next_soil_type<1):
+                next_soil_type = 1
+            lasam_params[soil_type_loc] += ','
+            lasam_params[soil_type_loc] += str(next_soil_type)
+
+            lasam_params[soil_param_file_loc_id] = 'soil_params_file='+lasam_dir+'/'+fname_soil
 
             giuh_cat = json.loads(self.gdf['giuh'][cat_name])
             giuh_cat = pd.DataFrame(giuh_cat, columns=['v', 'frequency'])
@@ -514,6 +609,16 @@ class ConfigurationGenerator:
             lasam_file = os.path.join(lasam_dir, fname_lasam)
             with open(lasam_file, "w") as f:
                 f.writelines('\n'.join(lasam_params))
+
+
+            # cat_name = 'cat-' + str(catID)
+
+            # soil_data = soil_data_base.copy()
+
+            # fname_soil = f'soil_{cat_name}.dat'
+            soil_file = os.path.join(lasam_dir, fname_soil)
+            with open(soil_file, "w") as f:
+                f.writelines('\n'.join(soil_data))
 
 
     def write_pet_input_files(self):
@@ -630,7 +735,8 @@ class ConfigurationGenerator:
         else:
             stream_output = {
                 "stream_output": {
-                    'stream_output_directory': os.path.join(self.output_dir, "outputs/troute"),
+                    'stream_output_directory': os.path.join(self.output_dir, "troute"),
+                    'mask_output': os.path.join(troute_dir, "mask_output.yaml"),
                     'stream_output_time': -1,
                     'stream_output_type': '.nc',
                     'stream_output_internal_frequency': 60
@@ -641,6 +747,61 @@ class ConfigurationGenerator:
 
         with open(os.path.join(troute_dir, "troute_config.yaml"), 'w') as file:
             yaml.dump(d, file, default_flow_style=False, sort_keys=False)
+
+
+        ##### to reduce I/O, make just the most downstream nexus + inflowing WBs
+        file_path = os.path.join(troute_dir, "mask_output.yaml")
+
+        # Extract gage ID from geopackage filename (e.g., "gage_09408000.gpkg" "09408000")
+        basename = os.path.basename(self.gpkg_file)
+        gage_id = os.path.splitext(basename)[0].replace("gage_", "")
+
+        # Load downstream flowpath summary to get nexus and WBs
+        summary_path = "/Users/peterlafollette/NextGenSandboxHub/downstream_flowpath_summary.csv"
+        df = pd.read_csv(summary_path, dtype=str)
+
+        if gage_id not in df["gage_id"].values:
+            print(f" Warning: Gage ID {gage_id} not found in {summary_path}. Skipping mask_output.yaml.")
+            return
+
+        row = df[df["gage_id"] == gage_id].iloc[0]
+
+        # Parse nexus ID
+        nexus_str = row["nexus_before_it"]
+        if not isinstance(nexus_str, str) or not nexus_str.startswith("nex-"):
+            print(f" Warning: Invalid nexus string for gage {gage_id}: {nexus_str}. Skipping mask_output.yaml.")
+            return
+
+        try:
+            nexus_id = int(nexus_str.replace("nex-", ""))
+        except ValueError:
+            print(f" Warning: Failed to parse nexus ID from string '{nexus_str}' for gage {gage_id}.")
+            return
+
+        # Parse WB IDs
+        wb_ids = []
+        wbs_str = row["wbs_into_that_nexus"]
+        if isinstance(wbs_str, str) and wbs_str.strip():
+            wb_ids = [
+                int(wb.strip().replace("wb-", ""))
+                for wb in wbs_str.replace('"', "").split(",")
+                if wb.strip()
+            ]
+
+        # Construct mask dictionary
+        mask_dict = {
+            "nex": [nexus_id]
+        }
+        if wb_ids:
+            mask_dict["wb"] = wb_ids
+
+        # Custom YAML dumper to match t-route indentation style
+        class IndentDumper(yaml.Dumper):
+            def increase_indent(self, flow=False, indentless=False):
+                return super().increase_indent(flow, False)
+
+        with open(file_path, "w") as f:
+            yaml.dump(mask_dict, f, Dumper=IndentDumper, default_flow_style=False)
 
 
     def get_flowpath_attributes(self,

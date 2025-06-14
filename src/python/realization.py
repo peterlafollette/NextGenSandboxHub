@@ -73,8 +73,8 @@ class RealizationGenerator:
         ext = "lib*.so" if "linux" in platform else "lib*.dylib"
 
         for m in models:
-            if m in ['SoilFreezeThaw', 'cfe', 'SoilMoistureProfiles', 'LASAM', 'sloth', 'evapotranspiration', 'noah-owp-modular', 'topmodel']:
-                path_m = os.path.join(os.path.join(extern_path, m), "cmake_build") if m in ['sloth', 'noah-owp-modular', 'topmodel'] else os.path.join(os.path.join(extern_path, m, m), "cmake_build")
+            if m in ['SoilFreezeThaw', 'cfe', 'SoilMoistureProfiles', 'LASAM', 'LGAR-C', 'sloth', 'evapotranspiration', 'noah-owp-modular', 'topmodel']:
+                path_m = os.path.join(os.path.join(extern_path, m), "cmake_build") if m in ['sloth', 'noah-owp-modular', 'topmodel', 'LGAR-C'] else os.path.join(os.path.join(extern_path, m, m), "cmake_build")
                 if os.path.exists(path_m):
                     exe_m = glob.glob(os.path.join(path_m, ext))
                     if exe_m:
@@ -254,7 +254,8 @@ class RealizationGenerator:
                 "name": "bmi_c++",
                 "model_type_name": "LGAR",
                 "main_output_variable": "precipitation_rate",
-                "library_file": self.lib_files['LASAM'],
+                # "library_file": self.lib_files['LASAM'],
+                "library_file": self.lib_files['LASAM'] if "LASAM" in self.lib_files else self.lib_files['LGAR-C'],
                 "init_config": os.path.join(self.config_dir, 'lasam/lasam_config_{{id}}.txt'),
                 "allow_exceed_end_time": True,
                 "uses_forcing_file": False,
@@ -417,18 +418,22 @@ class RealizationGenerator:
             
             modules = [self.get_sloth_block(), self.get_pet_block(), self.get_cfe_block()]
                 
-            output_variables = ["RAIN_RATE", "DIRECT_RUNOFF", "INFILTRATION_EXCESS", "NASH_LATERAL_RUNOFF",
-                               "DEEP_GW_TO_CHANNEL_FLUX", "SOIL_TO_GW_FLUX", "Q_OUT", "SOIL_STORAGE", "POTENTIAL_ET", "ACTUAL_ET"]
-            output_header_fields = ["rain_rate", "direct_runoff", "infiltration_excess", "nash_lateral_runoff",
-                                   "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "soil_storage", "PET", "AET"]
+            # output_variables = ["RAIN_RATE", "DIRECT_RUNOFF", "INFILTRATION_EXCESS", "NASH_LATERAL_RUNOFF",
+            #                    "DEEP_GW_TO_CHANNEL_FLUX", "SOIL_TO_GW_FLUX", "Q_OUT", "SOIL_STORAGE", "POTENTIAL_ET", "ACTUAL_ET"]
+            # output_header_fields = ["rain_rate", "direct_runoff", "infiltration_excess", "nash_lateral_runoff",
+            #                        "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "soil_storage", "PET", "AET"]
+            output_variables = ["Q_OUT"]
+            output_header_fields = ["q_out"]
         elif "NOM" in self.formulation and "CFE" in self.formulation:
             #model_type_name = "NOM_CFE"
             main_output_variable = "Q_OUT"
             modules = [self.get_sloth_block(), self.get_noah_owp_modular_block(), self.get_cfe_block()]
-            output_variables = ["RAIN_RATE", "DIRECT_RUNOFF", "GIUH_RUNOFF", "INFILTRATION_EXCESS", "NASH_LATERAL_RUNOFF",
-                               "DEEP_GW_TO_CHANNEL_FLUX", "SOIL_TO_GW_FLUX", "Q_OUT", "SOIL_STORAGE", "POTENTIAL_ET", "ACTUAL_ET"]
-            output_header_fields = ["rain_rate", "direct_runoff", "giuh_runoff", "infiltration_excess", "nash_lateral_runoff",
-                                   "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "soil_storage", "PET", "AET"]
+            # output_variables = ["RAIN_RATE", "DIRECT_RUNOFF", "GIUH_RUNOFF", "INFILTRATION_EXCESS", "NASH_LATERAL_RUNOFF",
+            #                    "DEEP_GW_TO_CHANNEL_FLUX", "SOIL_TO_GW_FLUX", "Q_OUT", "SOIL_STORAGE", "POTENTIAL_ET", "ACTUAL_ET"]
+            # output_header_fields = ["rain_rate", "direct_runoff", "giuh_runoff", "infiltration_excess", "nash_lateral_runoff",
+            #                        "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "soil_storage", "PET", "AET"]
+            output_variables = ["Q_OUT"]
+            output_header_fields = ["q_out"]
         elif "NOM" in self.formulation and "CFE" in self.formulation and "PET" in formulation:
             #model_type_name = "NOM_CFE_PET"
             main_output_variable = "Q_OUT"
@@ -441,20 +446,24 @@ class RealizationGenerator:
             #model_type_name = "NOM_LASAM"
             main_output_variable = "total_discharge"
             modules = [self.get_sloth_block(), self.get_noah_owp_modular_block(), self.get_lasam_block()]
-            output_variables = ["TGS", "precipitation", "potential_evapotranspiration", "actual_evapotranspiration",
-                               "soil_storage", "surface_runoff", "giuh_runoff", "groundwater_to_stream_recharge", "percolation",
-                               "total_discharge", "infiltration"]
-            output_header_fields = ["ground_temperature", "rain_rate", "PET_rate", "actual_ET", "soil_storage", "direct_runoff",
-                                   "giuh_runoff", "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "infiltration"]
+            # output_variables = ["TGS", "precipitation", "potential_evapotranspiration", "actual_evapotranspiration",
+            #                    "soil_storage", "surface_runoff", "giuh_runoff", "groundwater_to_stream_recharge", "percolation",
+            #                    "total_discharge", "infiltration"]
+            # output_header_fields = ["ground_temperature", "rain_rate", "PET_rate", "actual_ET", "soil_storage", "direct_runoff",
+            #                        "giuh_runoff", "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "infiltration"]
+            output_variables = ["total_discharge"]
+            output_header_fields = ["q_out"]
         elif "PET" in self.formulation and "LASAM" in self.formulation:
             #model_type_name = "PET_LASAM"
             main_output_variable = "total_discharge"
             modules = [self.get_sloth_block(), self.get_pet_block(), self.get_lasam_block()]
-            output_variables = ["precipitation", "potential_evapotranspiration", "actual_evapotranspiration",
-                               "soil_storage", "surface_runoff", "giuh_runoff", "groundwater_to_stream_recharge", "percolation",
-                               "total_discharge", "infiltration"]
-            output_header_fields = ["rain_rate", "PET_rate", "actual_ET", "soil_storage", "direct_runoff", "giuh_runoff",
-                                   "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "infiltration"]
+            # output_variables = ["precipitation", "potential_evapotranspiration", "actual_evapotranspiration",
+            #                    "soil_storage", "surface_runoff", "giuh_runoff", "groundwater_to_stream_recharge", "percolation",
+            #                    "total_discharge", "infiltration"]
+            # output_header_fields = ["rain_rate", "PET_rate", "actual_ET", "soil_storage", "direct_runoff", "giuh_runoff",
+            #                        "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "infiltration"]
+            output_variables = ["total_discharge"]
+            output_header_fields = ["q_out"]
         elif "NOM" in self.formulation and "TOPMODEL" in self.formulation:
             #model_type_name = "NOM_TOPMODEL"
             main_output_variable = "Qout"

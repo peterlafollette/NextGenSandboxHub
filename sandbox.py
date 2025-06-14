@@ -80,11 +80,51 @@ def Sandbox(sandbox_config, calib_config):
             sys.exit("Failed during generating config files step...")
         else:
             print ("DONE \u2713")
+
+            # Disable Spotlight indexing in outputs/div and troute if they exist or might be used
+            import platform
+            from pathlib import Path
+            import glob
+            import yaml
+
+            def disable_spotlight_indexing(path_str):
+                path = Path(path_str)
+                if platform.system() == "Darwin":
+                    path.mkdir(parents=True, exist_ok=True)
+                    (path / ".metadata_never_index").touch()
+
+            # Parse output_dir from the sandbox config file
+            with open(sandbox_config, "r") as f:
+                sandbox_dict = yaml.safe_load(f)
+            output_base = Path(sandbox_dict["output_dir"])
+
+            # Apply to all gage output dirs created
+            gage_dirs = glob.glob(str(output_base / "*" / "outputs" / "div"))
+            for div_path in gage_dirs:
+                disable_spotlight_indexing(div_path)
+
+            for gage_path in output_base.glob("*"):
+                if not gage_path.is_dir():
+                    continue  # skip files like .DS_Store
+                div_path = gage_path / "outputs" / "div"
+                troute_path = gage_path / "troute"
+
+                disable_spotlight_indexing(div_path)
+
+                if not troute_path.exists():
+                    try:
+                        troute_path.mkdir(parents=True, exist_ok=True)
+                    except Exception as e:
+                        print(f"Warning: Could not create troute dir: {troute_path} - {e}")
+                disable_spotlight_indexing(troute_path)
+
+
+
         
     if (args.run):
         print ("Calling Runner...")
 
-        _runner = runner.Runner(sandbox_config, calib_config)
+        _runner = runner.Runner(sandbox_config, calib_config, gage_id=args.gage_id)
         status  = _runner.run()
 
         if (status):
@@ -106,6 +146,7 @@ if __name__ == "__main__":
         parser.add_argument("-run",    action='store_true',    help="Run NextGen simulations")
         parser.add_argument("-i",      dest="sandbox_infile", type=str, required=False,  help="sandbox config file")
         parser.add_argument("-j",      dest="calib_infile",    type=str, required=False,  help="caliberation config file")
+        parser.add_argument("--gage_id", type=str, required=False, help="Run model only for this gage ID")
         args = parser.parse_args()
     except SystemExit:
         print("Formulations supported:\n" + "\n".join(formulations_supported))

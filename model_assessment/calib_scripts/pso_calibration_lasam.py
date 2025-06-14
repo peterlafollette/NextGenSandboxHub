@@ -1,0 +1,880 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | April 2025]
+
+import os
+import subprocess
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from hydroeval import kge
+import random
+import multiprocessing
+import sys
+import traceback
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from model_assessment.util.metrics import compute_metrics
+from model_assessment.util.update_NOM import update_mptable
+import yaml
+import json
+import shutil 
+
+
+np.random.seed(42)
+random.seed(42)
+
+# === CONFIGURATION ===
+n_particles = 2 #15
+n_iterations = 2 #50 #so total number of model runs at a gage will be equal to n_particles*n_iterations
+max_cores_for_gages = 2 #11  # How many gages to calibrate in parallel
+
+# project_root = "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
+# logging_dir = os.path.join(project_root, "logging")
+# sandbox_path = "/Users/peterlafollette/NextGenSandboxHub/sandbox.py"
+# os.makedirs(logging_dir, exist_ok=True)
+
+from model_assessment.configs import path_config as cfg
+with open("model_assessment/configs/time_config.yaml", "r") as f:
+    time_cfg = yaml.safe_load(f)
+
+spinup_start = pd.Timestamp(time_cfg["spinup_start"])
+cal_start    = pd.Timestamp(time_cfg["cal_start"])
+cal_end      = pd.Timestamp(time_cfg["cal_end"])
+val_start    = pd.Timestamp(time_cfg["val_start"])
+val_end      = pd.Timestamp(time_cfg["val_end"])
+
+project_root = cfg.project_root
+logging_dir = cfg.logging_dir
+sandbox_path = cfg.sandbox_path
+observed_q_root = cfg.observed_q_root
+
+def clear_terminal():
+    os.system('clear')  # 'cls' for Windows
+
+def check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
+    # Check for stop file
+    stop_file = os.path.join(project_root, "STOP_NOW.txt")
+    if os.path.exists(stop_file):
+        print("Detected STOP_NOW.txt")
+        return True
+
+    # Check available disk space using statvfs
+    stat = os.statvfs("/")
+    free_bytes = stat.f_frsize * stat.f_bavail
+    free_gb = free_bytes / (1024 ** 3)
+    if free_gb < threshold_gb:
+        print(f"Free disk space below threshold: {free_gb:.2f} GB")
+        return True
+
+    return False
+
+
+# === OBSERVED DATA ===
+# def get_observed_q(observed_path):
+#     df = pd.read_csv(observed_path, parse_dates=['value_time'])
+#     df.set_index('value_time', inplace=True)
+#     return df['flow_m3_per_s'].resample('1h').mean()
+
+def get_observed_q(observed_path):
+    df = pd.read_csv(observed_path, parse_dates=['value_time'])
+    df.set_index('value_time', inplace=True)
+    
+    # Optional: raise error or warning if data isn't hourly
+    expected_freq = pd.infer_freq(df.index)
+    if expected_freq != 'h':
+        print(f"Warning: Observed data in {observed_path} is not hourly (inferred freq: {expected_freq})")
+    
+    return df['flow_m3_per_s']
+
+def extract_tile_params(full_params, tile_idx, n_tiles):
+    full_params = np.array(full_params)
+    total_len = len(full_params)
+
+    # Special case: weight parameter at the end
+    if n_tiles == 2 and total_len % 2 == 1:
+        param_slice = full_params[:-1]  # Exclude weight
+        chunk_size = len(param_slice) // n_tiles
+        return param_slice[tile_idx * chunk_size : (tile_idx + 1) * chunk_size]
+
+    # Standard case
+    if total_len % n_tiles != 0:
+        raise ValueError(f"Parameter vector length ({total_len}) not divisible by number of tiles ({n_tiles})")
+    chunk_size = total_len // n_tiles
+    return full_params[tile_idx * chunk_size : (tile_idx + 1) * chunk_size]
+
+
+def extract_initial_params(example_config_path):
+    with open(example_config_path) as f:
+        lines = f.readlines()
+
+    # print(f"Reading LASAM config: {example_config_path}")
+
+    soil_types_line = next(line for line in lines if line.startswith("layer_soil_type="))
+    soil_types = list(map(int, soil_types_line.strip().split("=")[1].split(",")))
+    num_layers = len(soil_types)
+
+    a = float(next(line.split("=")[1] for line in lines if line.startswith("a=")))
+    b = float(next(line.split("=")[1] for line in lines if line.startswith("b=")))
+    frac_to_GW = float(next(line.split("=")[1] for line in lines if line.startswith("frac_to_GW=")))
+    field_capacity_psi = float(next(line.split("=")[1].split("[")[0] for line in lines if line.startswith("field_capacity_psi=")))
+    spf_factor = float(next(line.split("=")[1] for line in lines if line.startswith("spf_factor=")))
+
+    soil_file = next(line.split("=")[1].strip() for line in lines if line.startswith("soil_params_file="))
+    with open(soil_file) as f:
+        soil_lines = f.readlines()
+
+    layer_params = []
+    for soil_type in soil_types:
+        tokens = soil_lines[soil_type].split()
+        alpha = float(tokens[3])
+        n = float(tokens[4])
+        Ks = float(tokens[5])
+        layer_params.extend([
+            np.log10(alpha),
+            n,
+            np.log10(Ks)
+        ])
+
+    first_soil_type = soil_types[0]
+    first_layer_tokens = soil_lines[first_soil_type].split()
+    theta_e_1 = float(first_layer_tokens[2])  # Assuming column 2 is theta_e
+
+    # === NOM parameter extraction (new logic)
+    config_root = os.path.dirname(os.path.dirname(example_config_path))  # trims off /lasam
+    nom_dir = os.path.join(config_root, "nom")
+    nom_params = []
+
+    if os.path.isdir(nom_dir):
+        mptable_path = os.path.join(nom_dir, "parameters", "MPTABLE.TBL")
+        # print(f"Reading MPTABLE.TBL from: {mptable_path}")
+        try:
+            with open(mptable_path) as f:
+                lines = f.readlines()
+
+            nom_param_names = ["MFSNO", "RSURF_SNOW", "HVT", "CWPVT", "VCMX25", "MP"]
+            nom_params_dict = {}
+
+            for line in lines:
+                if '=' not in line or line.strip().startswith('!'):
+                    continue
+                key, value = line.split('=', 1)
+                param_name = key.strip()
+                if param_name in nom_param_names:
+                    value_str = value.split('!')[0]
+                    values = [v.strip() for v in value_str.split(',') if v.strip()]
+                    nom_params_dict[param_name] = float(values[0])
+
+            if set(nom_params_dict.keys()) != set(nom_param_names):
+                raise ValueError(f"Found NOM parameters {list(nom_params_dict.keys())}, expected {nom_param_names}. Check formatting in {mptable_path}")
+
+            nom_params = [nom_params_dict[p] for p in nom_param_names]
+
+        except Exception as e:
+            print(f"Failed to parse NOM parameters from {mptable_path}: {e}")
+
+    return layer_params + [a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1] + nom_params
+
+
+
+def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None, include_nom=False, n_tiles=2, weights=None):
+    params, particle_idx, gage_id, observed_q_root = args
+
+    if base_roots is None or len(base_roots) != n_tiles:
+        raise ValueError("Must provide one project root per tile")
+    if weights is None:
+        # weights = [1.0 / n_tiles] * n_tiles
+        weights = [0.7, 0.3]
+    assert len(weights) == n_tiles
+
+    # Static path for observed streamflow
+    # obs_path = os.path.join(observed_q_root, f"USGS_streamflow/successful_sites_resampled/{gage_id}.csv")
+    obs_path = os.path.join(observed_q_root, "successful_sites_resampled", f"{gage_id}.csv")
+    obs_series = get_observed_q(obs_path)
+    sim_dfs = []
+
+    try:
+        for tile in range(n_tiles):
+            tile_params = extract_tile_params(params, tile, n_tiles)
+            tile_root = base_roots[tile]
+
+            config_dir = os.path.join(tile_root, f"out/{gage_id}/configs/lasam")
+            postproc_dir = os.path.join(tile_root, "postproc")
+
+            config_files = sorted(f for f in os.listdir(config_dir) if f.startswith("lasam_config_cat"))
+            for fname in config_files:
+                update_lasam_files_for_divide(os.path.join(config_dir, fname), tile_params, include_nom)
+
+            if include_nom:
+                nom_template = os.path.join(tile_root, f"out/{gage_id}/configs/nom/parameters/MPTABLE.TBL")
+                update_mptable(
+                    original_file=nom_template,
+                    output_file=nom_template,
+                    updated_params={
+                        "MFSNO": tile_params[-6],
+                        "RSURF_SNOW": tile_params[-5],
+                        "HVT": tile_params[-4],
+                        "CWPVT": tile_params[-3],
+                        "VCMX25": tile_params[-2],
+                        "MP": tile_params[-1]
+                    },
+                    verbose=False
+                )
+
+            env = os.environ.copy()
+            env["PARTICLE_ID"] = f"{particle_idx}_tile_{tile}"
+
+            json_dir = os.path.join(tile_root, "out", gage_id, "json")
+            realization_path = [f for f in os.listdir(json_dir) if f.endswith(".json")][0]
+            realization_path = os.path.join(json_dir, realization_path)
+
+            with open(realization_path, "r") as f:
+                realization_config = json.load(f)
+
+            # Set calibration period only
+            realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
+            realization_config["time"]["end_time"]   = cal_end.strftime("%Y-%m-%d %H:%M:%S")
+            # if full_period:
+            #     realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
+            #     realization_config["time"]["end_time"]   = val_end.strftime("%Y-%m-%d %H:%M:%S")
+            # else:
+            #     realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
+            #     realization_config["time"]["end_time"]   = cal_end.strftime("%Y-%m-%d %H:%M:%S")
+
+
+            with open(realization_path, "w") as f:
+                json.dump(realization_config, f, indent=4)
+
+            # Update nts in troute_config.yaml
+            troute_path = os.path.join(
+                tile_root,
+                "out",
+                gage_id,
+                "configs",
+                "troute_config.yaml"
+            )
+
+            with open(troute_path, "r") as f:
+                troute_cfg = yaml.safe_load(f)
+
+            nts = int((cal_end - spinup_start) / pd.Timedelta(seconds=300))
+            troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
+            troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts
+
+            with open(troute_path, "w") as f:
+                yaml.dump(troute_cfg, f)
+
+
+            # Run the model
+            subprocess.call([
+                "python", sandbox_path, "-run",
+                "--gage_id", gage_id
+            ], cwd=tile_root)
+
+
+
+        
+            output_path = os.path.join(tile_root, "postproc", f"{gage_id}_particle_{particle_idx}.csv")
+            get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
+            subprocess.call(
+                ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", tile_root],
+                cwd=os.path.join(tile_root, "postproc")
+            )
+
+
+
+            sim_path = os.path.join(postproc_dir, f"{gage_id}_particle_{particle_idx}.csv")
+            sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
+            sim_dfs.append(sim_df['flow'].resample('1h').mean())
+
+        avg_sim = sum(w * s for w, s in zip(weights, sim_dfs))
+
+        sim_cal, obs_cal = avg_sim[cal_start:cal_end].dropna(), obs_series[cal_start:cal_end].dropna()
+        sim_val, obs_val = avg_sim[val_start:val_end].dropna(), obs_series[val_start:val_end].dropna()
+
+        sim_cal, obs_cal = sim_cal.align(obs_cal, join='inner')
+        sim_val, obs_val = sim_val.align(obs_val, join='inner')
+
+        # Add tiny epsilon to last values in each window. The idea is that if there is no streamflow in both observartions and simulations, that is good, but the KGE calculation will fail if both time series are 0s.
+        if len(sim_cal) > 0 and len(obs_cal) > 0:
+            sim_cal.iloc[-1] += 1e-8
+            obs_cal.iloc[-1] += 1e-8
+
+        if len(sim_val) > 0 and len(obs_val) > 0:
+            sim_val.iloc[-1] += 1e-8
+            obs_val.iloc[-1] += 1e-8
+
+        cal_metrics = compute_metrics(sim_cal, obs_cal, event_threshold=1e-2)
+        val_metrics = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
+
+        return -cal_metrics[metric_to_calibrate_on], val_metrics[metric_to_calibrate_on], cal_metrics, val_metrics
+
+    except Exception as e:
+        print(f"Error in tiled objective function for {gage_id}: {e}")
+        placeholder = {
+            "kge": -10.0, "log_kge": -10.0, "volume_error_percent": -999.0,
+            "peak_time_error_hours": -999.0, "peak_flow_error_percent": -999.0,
+            "event_kge": -10.0, "event_hours": 0, "total_hours": 0
+        }
+        return 10.0, -10.0, placeholder, placeholder
+
+
+def run_validation_with_best(gage_id, logging_dir, observed_q_root, base_roots, best_params, n_tiles=2, include_nom=False, weights=None, metric_to_calibrate_on="kge"):
+    best_particle_idx = f"best"  # marker for final run
+
+    # Temporarily override cal_end to val_end to span full period
+    global cal_end
+    original_cal_end = cal_end
+    cal_end = val_end
+
+    print(f"\n Running final validation for gage {gage_id} using best particle from calibration...")
+
+    args = (best_params, best_particle_idx, gage_id, observed_q_root)
+    _, _, cal_metrics, val_metrics = objective_function_tiled(
+        args,
+        metric_to_calibrate_on=metric_to_calibrate_on,
+        base_roots=base_roots,
+        include_nom=include_nom,
+        n_tiles=n_tiles,
+        weights=weights
+    )
+
+    # Rename output CSV for clarity
+    postproc_dir = os.path.join(base_roots[0], "postproc")
+    final_src = os.path.join(postproc_dir, f"{gage_id}_particle_{best_particle_idx}.csv")
+    final_dst = os.path.join(postproc_dir, f"{gage_id}_best.csv")
+    if os.path.exists(final_src):
+        shutil.copy(final_src, final_dst)
+        print(f" Final hydrograph saved to {final_dst}")
+    else:
+        print(f" Final hydrograph file not found: {final_src}")
+
+    # Restore original calibration end time
+    cal_end = original_cal_end
+
+    # print(" Final validation metrics:")
+    # print(val_metrics['kge'])
+
+    return val_metrics
+
+
+# === UPDATE LASAM FILES ===
+def update_lasam_files_for_divide(config_path, params, include_nom):
+    with open(config_path, 'r') as f:
+        lines = f.readlines()
+
+    # === Identify soil param file and soil types
+    soil_file = None
+    soil_types = []
+    for line in lines:
+        if line.startswith("soil_params_file="):
+            soil_file = line.split("=")[1].strip()
+        elif line.startswith("layer_soil_type="):
+            soil_types = list(map(int, line.strip().split("=")[1].split(",")))
+
+    num_layers = len(soil_types)
+
+    # === Extract LASAM parameter slice
+    if include_nom:
+        lasam_slice = params[-12:-6]
+    else:
+        lasam_slice = params[-6:]
+
+    log_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 = lasam_slice
+    a = 10 ** log_a
+
+    # Optional: debug log
+    # print(f"LASAM params being written: a={a:.4e}, b={b}, frac_to_GW={frac_to_GW}, spf_factor={spf_factor}, theta_e_1={theta_e_1}, field_capacity_psi={field_capacity_psi}")
+
+    # === Update config file (in-place)
+    for i, line in enumerate(lines):
+        if line.startswith("a="):
+            lines[i] = f"a={a}\n"
+        elif line.startswith("b="):
+            lines[i] = f"b={b}\n"
+        elif line.startswith("frac_to_GW="):
+            lines[i] = f"frac_to_GW={frac_to_GW}\n"
+        elif line.startswith("field_capacity_psi="):
+            lines[i] = f"field_capacity_psi={field_capacity_psi}[cm]\n"
+        elif line.startswith("spf_factor="):
+            lines[i] = f"spf_factor={spf_factor}\n"
+
+    with open(config_path, 'w') as f:
+        f.writelines(lines)
+
+    # === Update soil file ===
+    if soil_file:
+        with open(soil_file, 'r') as f:
+            soil_lines = f.readlines()
+
+        for i, soil_type in enumerate(soil_types):
+            start = i * 3
+            log_alpha, n, log_Ks = params[start:start + 3]
+            alpha = 10 ** log_alpha
+            Ks = 10 ** log_Ks
+            tokens = soil_lines[soil_type].split()
+
+            if i == 0:
+                tokens[2] = str(theta_e_1)  # Only top layer
+
+            tokens[3] = str(alpha)
+            tokens[4] = str(n)
+            tokens[5] = str(Ks)
+            soil_lines[soil_type] = "\t".join(tokens) + "\n"
+
+        with open(soil_file, 'w') as f:
+            f.writelines(soil_lines)
+
+# === PSO ===
+class Particle:
+    def __init__(self, bounds, init_position=None):
+        if init_position is not None:
+            self.position = np.array(init_position)
+        else:
+            self.position = np.array([np.random.uniform(low, high) for low, high in bounds])
+        self.velocity = np.array([(high - low) * 0.1 * np.random.uniform(-1, 1) for low, high in bounds])
+        self.best_position = np.copy(self.position)
+        self.best_value = float('inf')
+        self.current_value = float('inf')
+        self.stagnation_counter = 0  # Tracks how many iterations without improvement
+
+    def reset(self, bounds):
+        self.position = np.array([np.random.uniform(low, high) for low, high in bounds])
+        self.velocity = np.array([(high - low) * 0.1 * np.random.uniform(-1, 1) for low, high in bounds])
+        self.best_position = np.copy(self.position)
+        self.best_value = float('inf')
+        self.current_value = float('inf')
+        self.stagnation_counter = 0
+
+
+    def update_velocity(self, global_best_position, w, c1, c2):
+        r1 = np.random.random(len(self.position))
+        r2 = np.random.random(len(self.position))
+        cognitive = c1 * r1 * (self.best_position - self.position)
+        social = c2 * r2 * (global_best_position - self.position)
+        self.velocity = w * self.velocity + cognitive + social
+
+    def update_position(self, bounds):
+        self.position += self.velocity
+        for i in range(len(self.position)):
+            if self.position[i] < bounds[i][0]:
+                self.position[i] = bounds[i][0]; self.velocity[i] *= -0.5
+            elif self.position[i] > bounds[i][1]:
+                self.position[i] = bounds[i][1]; self.velocity[i] *= -0.5
+
+from scipy.optimize import minimize  # Add this at the top if not already present
+
+class PSO:
+    def __init__(self, n_particles, bounds, n_iterations, gage_id,
+                 init_params, base_roots, observed_q_root,
+                 metric_to_calibrate_on="kge", w=0.9, c1=1.5, c2=1.5,
+                 include_nom=False, n_tiles=2, weights=None):
+
+        self.n_particles = n_particles
+        self.bounds = bounds
+        self.n_iterations = n_iterations
+        self.gage_id = gage_id
+        self.include_nom = include_nom
+        self.observed_q_root = observed_q_root
+        self.base_roots = base_roots
+        self.metric_to_calibrate_on = metric_to_calibrate_on
+        self.weights = weights if weights is not None else [1.0 / n_tiles] * n_tiles
+        self.n_tiles = n_tiles
+
+        self.particles = [Particle(bounds, init_position=init_params if i == 0 else None) for i in range(n_particles)]
+        self.global_best_position = self.particles[0].position
+        self.global_best_value = float('inf')
+        self.c1, self.c2 = c1, c2
+
+    ###
+    def optimize(self):
+        from datetime import datetime
+        best_calibration_metric = None
+        best_validation_metric = None
+
+        start_time = datetime.now()
+        log_rows = []
+        log_path = os.path.join(project_root, "logging", f"{self.gage_id}.csv")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        stagnation_threshold = 10
+        w_start, w_end = 0.9, 0.4  # Inertia decay range
+
+        for iteration in range(self.n_iterations):
+            if check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
+                print(f"Early termination of PSO for gage {self.gage_id} at iteration {iteration + 1}")
+                break
+
+            clear_terminal()
+            print(f"\n--- Iteration {iteration + 1} for gage {self.gage_id} ---")
+
+            w = w_start - (w_start - w_end) * (iteration / self.n_iterations)
+
+            results = []
+            ###
+            for i, p in enumerate(self.particles):
+                if check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
+                    print(f"Early termination of PSO for gage {self.gage_id} during particle {i} at iteration {iteration + 1}")
+                    return self.global_best_position, self.global_best_value, best_validation_metric, datetime.now() - start_time
+
+                full_position = p.position
+                if self.n_tiles == 2:
+                    weight_tile0 = full_position[-1]
+                    weights = [weight_tile0, 1.0 - weight_tile0]
+                    param_slice = full_position
+                else:
+                    weights = self.weights  # fallback
+                    param_slice = full_position
+
+                args = (param_slice, i, self.gage_id, self.observed_q_root)
+                result = objective_function_tiled(
+                    args,
+                    metric_to_calibrate_on=self.metric_to_calibrate_on,
+                    base_roots=self.base_roots,
+                    include_nom=self.include_nom,
+                    n_tiles=self.n_tiles,
+                    weights=weights
+                )
+                results.append(result)
+
+
+
+            global_best_particle_idx = np.argmin([r[0] for r in results])
+
+            for idx, (objective_value, val_metric, cal_metrics, val_metrics) in enumerate(results):
+                particle = self.particles[idx]
+                particle.current_value = objective_value
+
+                if objective_value < particle.best_value:
+                    particle.best_value = objective_value
+                    particle.best_position = np.copy(particle.position)
+                    particle.stagnation_counter = 0
+                else:
+                    particle.stagnation_counter += 1
+
+                if objective_value < self.global_best_value:
+                    self.global_best_value = objective_value
+                    self.global_best_position = np.copy(particle.position)
+                    best_calibration_metric = cal_metrics[self.metric_to_calibrate_on]
+                    best_validation_metric = val_metrics[self.metric_to_calibrate_on]
+                    best_cal_metrics = cal_metrics
+
+                    # Save best hydrograph live
+                    try:
+                        sim_dfs_best = []
+                        for tile_save in range(self.n_tiles):
+                            tile_params_best = extract_tile_params(particle.position, tile_save, self.n_tiles)
+                            postproc_dir_best = os.path.join(self.base_roots[tile_save], "postproc")
+                            sim_path_best = os.path.join(postproc_dir_best, f"{self.gage_id}_particle_{idx}.csv")
+                            sim_df_best = pd.read_csv(sim_path_best, parse_dates=['current_time']).set_index('current_time')
+                            sim_dfs_best.append(sim_df_best['flow'].resample('1h').mean())
+
+                        avg_sim_best = sum(w * s for w, s in zip(self.weights, sim_dfs_best))
+                        best_path_live = os.path.join(self.base_roots[0], "postproc", f"{self.gage_id}_best.csv")
+                        pd.DataFrame({"current_time": avg_sim_best.index, "flow": avg_sim_best.values}).to_csv(best_path_live, index=False)
+                        print(f"Live best hydrograph written to {best_path_live}")
+                    except Exception as e:
+                        print(f"Could not update best hydrograph for {self.gage_id} (particle {idx}): {e}")
+
+
+                if particle.stagnation_counter >= stagnation_threshold and idx != global_best_particle_idx:
+                    print(f"Resetting particle {idx} after {stagnation_threshold} stagnant iterations.")
+                    particle.reset(self.bounds)
+
+                param_dict = {}
+                full_params = particle.position
+                total_layers = 0
+                for tile in range(self.n_tiles):
+                    tile_params = extract_tile_params(full_params, tile, self.n_tiles)
+                    config_dir = os.path.join(self.base_roots[tile], f"out/{self.gage_id}/configs/lasam")
+                    config_file = sorted(f for f in os.listdir(config_dir) if f.startswith("lasam_config_cat"))[0]
+                    config_path = os.path.join(config_dir, config_file)
+
+                    with open(config_path) as f:
+                        lines = f.readlines()
+                    soil_type_line = next(line for line in lines if line.startswith("layer_soil_type="))
+                    num_layers = len(soil_type_line.strip().split("=")[1].split(","))
+                    total_layers += num_layers
+
+                    for i in range(num_layers):
+                        param_dict[f"log_alpha_{tile}_{i+1}"] = tile_params[3*i]
+                        param_dict[f"n_{tile}_{i+1}"] = tile_params[3*i + 1]
+                        param_dict[f"log_Ks_{tile}_{i+1}"] = tile_params[3*i + 2]
+
+                    offset = 3 * num_layers
+                    lasam_params = tile_params[offset:-6] if self.include_nom else tile_params[offset:]
+                    log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 = lasam_params
+                    param_dict.update({
+                        f"log10_a_{tile}": log10_a,
+                        f"b_{tile}": b,
+                        f"frac_to_GW_{tile}": frac_to_GW,
+                        f"field_capacity_psi_{tile}": field_capacity_psi,
+                        f"spf_factor_{tile}": spf_factor,
+                        f"theta_e_1_{tile}": theta_e_1
+                    })
+
+                    if self.include_nom:
+                        nom_params = tile_params[-6:]
+                        param_dict.update({
+                            f"MFSNO_{tile}": nom_params[0],
+                            f"RSURF_SNOW_{tile}": nom_params[1],
+                            f"HVT_{tile}": nom_params[2],
+                            f"CWPVT_{tile}": nom_params[3],
+                            f"VCMX25_{tile}": nom_params[4],
+                            f"MP_{tile}": nom_params[5]
+                        })
+                ###
+                # Optional: add weights to log
+                if self.n_tiles == 2 and len(p.position) == len(self.bounds):  # weight param is included
+                    weight_tile0 = p.position[-1]
+                    weight_tile1 = 1.0 - weight_tile0
+                    param_dict["weight_tile0"] = weight_tile0
+                    param_dict["weight_tile1"] = weight_tile1
+
+                row = {
+                    "iteration": iteration + 1,
+                    "particle": idx,
+                    f"{self.metric_to_calibrate_on}_calibration": cal_metrics[self.metric_to_calibrate_on],
+                    f"{self.metric_to_calibrate_on}_validation": val_metrics[self.metric_to_calibrate_on],
+                    **param_dict
+                }
+                log_rows.append(row)
+
+            pd.DataFrame(log_rows).to_csv(log_path, index=False)
+
+            for p in self.particles:
+                p.update_velocity(self.global_best_position, w, self.c1, self.c2)
+                p.update_position(self.bounds)
+
+            print(f"Best objective so far: {-self.global_best_value:.4f}")
+
+        print(f"PSO completed for {self.gage_id} in {datetime.now() - start_time}")
+
+        # Now run final validation
+        final_val_metrics = run_validation_with_best(
+            gage_id=self.gage_id,
+            logging_dir=logging_dir,
+            observed_q_root=self.observed_q_root,
+            base_roots=self.base_roots,
+            best_params=self.global_best_position,
+            n_tiles=self.n_tiles,
+            include_nom=self.include_nom,
+            weights=self.weights
+        )
+
+
+        best_position = self.global_best_position
+
+
+        param_dict = {}
+        for tile in range(self.n_tiles):
+            tile_params = extract_tile_params(best_position, tile, self.n_tiles)
+            config_dir = os.path.join(self.base_roots[tile], f"out/{self.gage_id}/configs/lasam")
+            config_file = sorted(f for f in os.listdir(config_dir) if f.startswith("lasam_config_cat"))[0]
+            config_path = os.path.join(config_dir, config_file)
+
+            with open(config_path) as f:
+                lines = f.readlines()
+            soil_type_line = next(line for line in lines if line.startswith("layer_soil_type="))
+            num_layers = len(soil_type_line.strip().split("=")[1].split(","))
+
+            for i in range(num_layers):
+                param_dict[f"log_alpha_{tile}_{i+1}"] = tile_params[3*i]
+                param_dict[f"n_{tile}_{i+1}"] = tile_params[3*i + 1]
+                param_dict[f"log_Ks_{tile}_{i+1}"] = tile_params[3*i + 2]
+
+            offset = 3 * num_layers
+            lasam_params = tile_params[offset:-6] if self.include_nom else tile_params[offset:]
+            log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 = lasam_params
+            param_dict.update({
+                f"log10_a_{tile}": log10_a,
+                f"b_{tile}": b,
+                f"frac_to_GW_{tile}": frac_to_GW,
+                f"field_capacity_psi_{tile}": field_capacity_psi,
+                f"spf_factor_{tile}": spf_factor,
+                f"theta_e_1_{tile}": theta_e_1
+            })
+
+            if self.include_nom:
+                nom_params = tile_params[-6:]
+                param_dict.update({
+                    f"MFSNO_{tile}": nom_params[0],
+                    f"RSURF_SNOW_{tile}": nom_params[1],
+                    f"HVT_{tile}": nom_params[2],
+                    f"CWPVT_{tile}": nom_params[3],
+                    f"VCMX25_{tile}": nom_params[4],
+                    f"MP_{tile}": nom_params[5]
+                })
+
+        # Also add weight if using weight parameter
+        if self.n_tiles == 2 and len(best_position) == len(self.bounds):
+            weight_tile0 = best_position[-1]
+            param_dict["weight_tile0"] = weight_tile0
+            param_dict["weight_tile1"] = 1.0 - weight_tile0
+
+        # Lookup calibration metrics from global best
+        global_best_idx = np.argmin([p.best_value for p in self.particles])
+        global_best_particle = self.particles[global_best_idx]
+
+        # After run_validation_with_best()
+        final_row = {
+            "iteration": "final",
+            "particle": -1,
+            f"{self.metric_to_calibrate_on}_calibration": best_cal_metrics[self.metric_to_calibrate_on],
+            f"{self.metric_to_calibrate_on}_validation": final_val_metrics[self.metric_to_calibrate_on],
+            **param_dict
+        }
+
+
+        pd.concat([
+            pd.read_csv(log_path),
+            pd.DataFrame([final_row])
+        ]).to_csv(log_path, index=False)
+
+
+        # try:
+        #     sim_dfs = []
+        #     for tile in range(self.n_tiles):
+        #         tile_params = extract_tile_params(self.global_best_position, tile, self.n_tiles)
+        #         postproc_dir = os.path.join(self.base_roots[tile], "postproc")
+        #         # Identify which particle produced the global best
+        #         best_idx = np.argmin([p.best_value for p in self.particles])
+        #         sim_path = os.path.join(postproc_dir, f"{self.gage_id}_particle_{best_idx}.csv")
+        #         sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
+        #         sim_dfs.append(sim_df['flow'].resample('1h').mean())
+
+        #     avg_sim = sum(w * s for w, s in zip(self.weights, sim_dfs))
+
+        #     best_path = os.path.join(self.base_roots[0], "postproc", f"{self.gage_id}_best.csv")
+        #     pd.DataFrame({"current_time": avg_sim.index, "flow": avg_sim.values}).to_csv(best_path, index=False)
+        #     print(f"Final best hydrograph written to {best_path}")
+        # except Exception as e:
+        #     print(f"Could not save final best hydrograph for {self.gage_id}: {e}")
+
+        return self.global_best_position, self.global_best_value, best_validation_metric, datetime.now() - start_time
+
+
+
+# === PER-GAGE WRAPPER ===
+def calibrate_gage(gage_id):
+    # Fixed paths
+    # observed_q_root = "/Users/peterlafollette/NextGenSandboxHub"
+    observed_q_root = cfg.observed_q_root
+    # model_roots = [
+    #     "/Users/peterlafollette/NextGenSandboxHub_model1",
+    #     "/Users/peterlafollette/NextGenSandboxHub_model2"
+    # ]
+    model_roots = cfg.model_roots
+    n_tiles = len(model_roots)
+
+    # For now, assume equal weights per tile. Weights are set later as a part of calibration.
+    weights = [1.0 / n_tiles] * n_tiles
+
+    try:
+        all_init_params = []
+        all_bounds = []
+        include_nom_flags = []
+
+        for tile_idx, root in enumerate(model_roots):
+            config_dir = os.path.join(root, f"out/{gage_id}/configs/lasam")
+            if not os.path.exists(config_dir):
+                print(f"Skipping tile {tile_idx} for {gage_id}: missing config dir {config_dir}")
+                return
+
+            # === Read initial parameters
+            example_config = sorted(f for f in os.listdir(config_dir) if f.startswith("lasam_config_cat"))[0]
+            example_path = os.path.join(config_dir, example_config)
+            tile_init = extract_initial_params(example_path)
+
+            # Convert 'a' to log10
+            include_nom = os.path.isdir(os.path.join(root, f"out/{gage_id}/configs/nom"))
+            a_index = -12 if include_nom else -6
+            tile_init[a_index] = np.log10(tile_init[a_index])
+
+            all_init_params.extend(tile_init)
+            include_nom_flags.append(include_nom)
+
+            # === Set bounds
+            num_layers = len([
+                line for line in open(example_path)
+                if line.startswith("layer_soil_type=")
+            ][0].split("=")[1].split(","))
+
+            tile_bounds = []
+            for _ in range(num_layers):
+                tile_bounds.extend([(-4, 0.0), (1.02, 3.0), (-4, 2)])  # log_alpha, n, log_Ks
+
+            tile_bounds.extend([
+                (-8, -1),         # log10_a
+                (0.01, 5.0),      # b
+                (1e-4, 1 - 1e-4), # frac_to_GW
+                (10.0, 500.0),    # field_capacity_psi
+                (0.1, 1.0),       # spf_factor
+                (0.3, 0.6)        # theta_e_1
+            ])
+
+            if include_nom:
+                tile_bounds.extend([
+                    (0.625, 5.0),     # MFSNO
+                    (0.1, 100.0),     # RSURF_SNOW
+                    (0.0, 20.0),      # HVT
+                    (0.18, 5.0),      # CWPVT
+                    (0.0, 80.0),      # VCMX25
+                    (3.6, 12.6)       # MP
+                ])
+
+            all_bounds.extend(tile_bounds)
+
+        # After all tile_bounds are appended
+        if n_tiles == 2:
+            # Add a parameter for weight of tile 0 (tile 1 weight is 1 - this)
+            all_init_params.append(0.8)  # or any reasonable default
+            all_bounds.append((0.0, 1.0))  # bounds for tile 0 weight
+
+
+        # === Determine if any tile includes NOM
+        include_nom = any(include_nom_flags)
+
+        print(f"Length of all_init_params: {len(all_init_params)}")
+        print(f"Length of all_bounds: {len(all_bounds)}")
+        print(f"n_tiles: {n_tiles}")
+
+        # === Run PSO
+        pso = PSO(
+            n_particles=n_particles,
+            bounds=all_bounds,
+            n_iterations=n_iterations,
+            gage_id=gage_id,
+            init_params=all_init_params,
+            base_roots=model_roots,
+            observed_q_root=observed_q_root,
+            metric_to_calibrate_on="kge",
+            include_nom=include_nom,
+            n_tiles=n_tiles,
+            weights=weights
+        )
+
+        best_pos, best_val, best_val_metric, runtime = pso.optimize()
+
+    except Exception as e:
+        print(f"Error calibrating {gage_id}: {e}")
+        traceback.print_exc()
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    from multiprocessing import get_context
+    from datetime import datetime
+
+    start_time = datetime.now()
+
+    # Adjust as needed
+    gages_file = cfg.gages_file
+    gage_list = pd.read_csv(gages_file, dtype={"gage_id": str})["gage_id"].tolist()
+
+    ctx = get_context("spawn")
+    with ctx.Pool(processes=max_cores_for_gages) as pool:
+        pool.map(calibrate_gage, gage_list)
+
+    end_time = datetime.now()
+    total_duration = end_time - start_time
+    print(f"\n Total wall time for calibration: {total_duration}")
+

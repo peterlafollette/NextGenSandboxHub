@@ -109,6 +109,7 @@ class Driver:
                     fdir = Path(forcing_dir_local.replace("{*}", Path(g).name))
 
                     if not fdir.exists() or not fdir.is_dir():
+                        print(fdir)
                         raise ValueError("Forcing directory '{fdir}' does not exist.")
                     if is_corrected:
                         forcing_file = glob.glob(f"{fdir}/*_corrected.nc")[0]

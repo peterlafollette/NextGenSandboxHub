@@ -77,7 +77,29 @@ Setup <-function() {
   # dem_input_file        <<- get_param(inputs, "subsettings$dem_input_file", "s3://lynker-spatial/gridded-resources/dem.vrt")
   # Newer DEM, better for oCONUS and other previously problematic basins
   # dem_input_file  <<- get_param(inputs, "subsetting$dem_input_file", "s3://lynker-spatial/gridded-resources/USGS_seamless_13.vrt")
+  print("using hardcoded dem_input_file in NextGenSandboxHub/src/R/main.R")
   dem_input_file  <<- get_param(inputs, "subsetting$dem_input_file", "/Users/peterlafollette/CIROH_project/USGS_seamless_13.vrt")
+
+
+  # ####should allow for hardcoded or s3 source
+  # # Define the S3 and local fallback paths
+  # primary_path   <- "s3://lynker-spatial/gridded-resources/USGS_seamless_13.vrt"
+  # fallback_path  <- "/Users/peterlafollette/CIROH_project/USGS_seamless_13.vrt"
+
+  # # Try primary path first, then fallback if error
+  # dem_input_file <<- tryCatch({
+  #   get_param(inputs, "subsetting$dem_input_file", primary_path)
+  # }, error = function(e1) {
+  #   message("Primary S3 path failed, attempting hardcoded path. ", e1$message)
+    
+  #   tryCatch({
+  #     get_param(inputs, "subsetting$dem_input_file", fallback_path)
+  #   }, error = function(e2) {
+  #     message("Hardcoded path also failed. Download USGS_seamless_13.vrt from https://www.lynker-spatial.com/data/gridded-resources/ and adjust the hardcoded path in NextGenSandboxHub/src/R/main.R ", e2$message)
+  #     NULL  # or stop("Both DEM paths failed") for halting execution
+  #   })
+  # })
+
 
   dem_output_dir  <<- get_param(inputs, "subsetting$dem_output_dir", "")
   

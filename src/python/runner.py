@@ -18,11 +18,13 @@ from pathlib import Path
 from src.python import configuration
 
 class Runner:
-    def __init__(self, config_workflow, config_calib):
+    def __init__(self, config_workflow, config_calib, gage_id=None): 
         self.os_name = platform.system()
         self.config_workflow = config_workflow
         self.config_calib = config_calib
+        self.gage_id = gage_id  
         self.load_configuration()
+
 
         if self.np_per_basin > 1 and not os.path.exists(f"{self.ngen_dir}/cmake_build/partitionGenerator"):
             sys.exit("Partitioning geopackage is requested but partitionGenerator does not exist! Quitting...")
@@ -92,6 +94,14 @@ class Runner:
     def run_ngen_without_calibration(self):
         infile = os.path.join(self.output_dir, "basins_passed.csv")
         indata = pd.read_csv(infile, dtype=str)
+
+        # Filter by gage_id if set
+        if self.gage_id:
+            indata = indata[indata["gage_id"] == self.gage_id]
+            if indata.empty:
+                print(f"Gage ID '{self.gage_id}' not found in {infile}. Skipping.")
+                return
+
         ngen_exe = os.path.join(self.ngen_dir, "cmake_build/ngen")
 
         for id, ncats in zip(indata["gage_id"], indata['num_divides']):
