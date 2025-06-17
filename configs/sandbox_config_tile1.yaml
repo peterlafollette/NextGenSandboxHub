@@ -23,7 +23,7 @@ subsetting :
     use_gage_file :
       use_gage_file : TRUE
       gage_file     : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub/basin_IDs/basin_IDs.csv"
-      column_name   : "STAID"
+      column_name   : "gage_id"
     use_gpkg :
       use_gpkg  : FALSE
       gpkg_dir  : "/Users/ahmadjan/Core/SimulationsData/projects/ngen-bm/test/gpkgs"
