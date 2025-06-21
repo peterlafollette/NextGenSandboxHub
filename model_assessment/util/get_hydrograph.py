@@ -1,3 +1,6 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | April 2025]
+# extracts the hydrograph for the nexus we are interested in for objective function calculation 
 ### Updated: extract only the flow time series for the correct nexus from a NetCDF file
 import os
 import sys
@@ -26,6 +29,10 @@ troute_dir = os.path.join(base_dir, "out", gage_id, "troute")
 parent_dir = Path(base_dir).resolve().parent
 summary_csv = os.path.join(parent_dir, "NextGenSandboxHub", "model_assessment", "util", "downstream_flowpath_summary.csv")
 
+if not os.path.exists(summary_csv):
+    print(f"ERROR: Required CSV not found at:\n  {summary_csv}")
+    print("Please run get_penult_ids.py to generate it before continuing.")
+    sys.exit(1)
 
 # Handle output path
 if args.output:

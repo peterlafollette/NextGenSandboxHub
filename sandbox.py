@@ -3,6 +3,8 @@
 # Contact : ahmad.jan.khattak@noaa.gov
 # Date    : July 16, 2024
 ############################################################################################
+###############################################################
+# edits from: Peter La Follette [plafollette@lynker.com | May 2025], to allow for tiled formulations
 
 import os, sys
 import subprocess
@@ -98,6 +100,11 @@ def Sandbox(sandbox_config, calib_config):
             with open(sandbox_config, "r") as f:
                 sandbox_dict = yaml.safe_load(f)
             output_base = Path(sandbox_dict["output_dir"])
+
+            # Create postproc directory at same level as output_dir
+            postproc_dir = output_base.parent / "postproc"
+            postproc_dir.mkdir(parents=True, exist_ok=True)
+            disable_spotlight_indexing(postproc_dir)
 
             # Apply to all gage output dirs created
             gage_dirs = glob.glob(str(output_base / "*" / "outputs" / "div"))

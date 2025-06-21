@@ -1,3 +1,7 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | April 2025]
+# used as part of get_hydrograph (which is used as part of pso or dds calibration scripts) to calculate KGE of a postprocessed hydrograph
+
 # metrics.py
 
 import numpy as np

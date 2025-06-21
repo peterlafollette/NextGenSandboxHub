@@ -1,3 +1,7 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | May 2025]
+# updates some NOM parameters in the event that NOM is part of a formulation that is being calibrated 
+
 def update_mptable(
     original_file: str,
     output_file: str,

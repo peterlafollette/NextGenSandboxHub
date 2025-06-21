@@ -1,3 +1,7 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | May 2025]
+# plots a map indicating at each gage which model did best, makes box plots describing model performance among all sites with various error metrics, and then makes a table describing the impact of removing each individual model on ensemble skill
+
 import os
 import sys
 import numpy as np
@@ -15,24 +19,40 @@ project_root = cfg.project_root
 import yaml
 
 # === USER SETTINGS ===
-objective_metric = "kge"      # or "log_kge" or "event_kge"
-exclude_low     = False       # whether to filter out winners below threshold
-kge_threshold   = 0.3         # threshold if exclude_low=True
-plot_hydrographs = True  # Set to False to skip hydrograph plots
-annotate = True
+objective_metric = "kge"   # or "log_kge" or "event_kge", although these may no lojnger be supported 
+exclude_low     = False    # whether to filter out winners below threshold
+kge_threshold   = 0.3      # threshold if exclude_low=True
+plot_hydrographs = True    # Set to False to skip hydrograph plots
+annotate = True            #prints gage IDs on the map
 
 # === Paths ===
-nwm_results_path   = "/Users/peterlafollette/Desktop/test_netcdf/kge_results.csv"
-gage_to_comid_path = "/Users/peterlafollette/Desktop/get_COMIDS/gage_comid_from_nhdplus_national.csv"
-comid_info_path    = "/Users/peterlafollette/Desktop/get_COMIDS/gage_comid_full_nhdplus_national.csv"
-states_shapefile   = "/Users/peterlafollette/NextGenSandboxHub/cb_2023_us_state_20m/cb_2023_us_state_20m.shp"
-retro_q_dir        = "/Users/peterlafollette/Desktop/test_netcdf/retro_q_sims"
-obs_dir            = "/Users/peterlafollette/NextGenSandboxHub/USGS_streamflow/successful_sites_resampled"
+nwm_results_path = os.path.join(
+    cfg.project_root,
+    "model_assessment", "retro_assessment", "kge_results.csv"
+)
+gage_to_comid_path = os.path.join(
+    cfg.model_assessment_root, "retro_assessment", "get_COMIDS", "gage_comid_from_nhdplus_national.csv"
+)
+comid_info_path = os.path.join(
+    cfg.model_assessment_root, "retro_assessment", "get_COMIDS", "gage_comid_full_nhdplus_national.csv"
+)
+
+###this is just a shapefile I use for making a map, it doesn't have to be this one in particular
+###it is from https://catalog.data.gov/dataset/2023-cartographic-boundary-file-shp-state-and-equivalent-entities-for-united-states-1-20000000/resource/b5ec957e-2ba3-4f3f-b0a3-c01973a50aec  
+states_shapefile   = os.path.join(
+    cfg.model_assessment_root, "cb_2023_us_state_20m", "cb_2023_us_state_20m.shp"
+)
+retro_q_dir = os.path.join(
+    cfg.model_assessment_root, "retro_assessment", "retro_q_sims"
+)
+obs_dir = os.path.join(
+    cfg.model_assessment_root, "USGS_streamflow", "successful_sites_resampled"
+)
+
 winner_csv_path    = "gage_model_winners.csv"
 
-
-lasam_log_dir = "/Users/peterlafollette/CIROH_project/NextGenSandboxHub/model_assessment/output_for_visualization/lasam/logging"
-cfe_log_dir   = "/Users/peterlafollette/CIROH_project/NextGenSandboxHub/model_assessment/output_for_visualization/cfe/logging"
+lasam_log_dir = os.path.join(project_root, "model_assessment", "output_for_visualization", "lasam", "logging")
+cfe_log_dir   = os.path.join(project_root, "model_assessment", "output_for_visualization", "cfe", "logging")
 
 # === Load NWM KGE lookup ===
 nwm_df = pd.read_csv(nwm_results_path, dtype={"gage_id":str})
@@ -68,7 +88,7 @@ def extract_best_val_metric(log_dir, gage_id):
                 'val': float(row.get(f"{objective_metric}_validation", np.nan))
             }
 
-    # Fallback: use max calibration score from numeric iterations
+    # Fallback: use max calibration score from numeric iterations. Will not work with updated code that only runs the model over the calibration period during calibration
     df_clean = df[df['iteration'].astype(str).str.isdigit()].copy()
     if df_clean.empty:
         return None
@@ -157,7 +177,7 @@ RESET = "\033[0m"
 print("\n=== Validation Metric Comparison ===")
 print(f"{'Gage':<12} | {'LGAR - PF':<10} | {'CFE':<10} | {'NWM':<10} | Best")
 print("-" * 60)
-for _, row in summary_df.iterrows():  # Use filtered summary_df here
+for _, row in summary_df.iterrows():
     gid  = row['gage_id']
     las  = row['lasam_val']
     cfe  = row['cfe_val']
@@ -198,7 +218,7 @@ colors = {'LGAR - PF':'green','CFE':'blue','NWM retro':'gold','Best Overall':'cy
 error = {lbl: {m:[] for m in metrics} for lbl in labels}
 
 # Validation window
-# start_time, end_time = '2018-10-01','2020-09-30'
+# start_time, end_time = '2018-10-01','2020-09-30' ###using time config now
 with open("model_assessment/configs/time_config.yaml", "r") as f:
     time_cfg = yaml.safe_load(f)
 
@@ -284,7 +304,7 @@ for mdl, grp in gage_gdf.groupby('winner'):
     )
 ax_map.set_title(
     "Best Performing Model at Each Gage (Validation KGE)",
-    fontsize=16    # increased from default
+    fontsize=16
 )
 ax_map.set_xlabel("Longitude")
 ax_map.set_ylabel("Latitude")
@@ -292,7 +312,7 @@ ax_map.set_xlim(minx-buffer, maxx+buffer)
 ax_map.set_ylim(miny-buffer, maxy+buffer)
 
 if annotate:
-    ###this code annotates the gage IDs on the map
+    ###this code annotates the gage IDs on the map, can get kind of cluttered so replaced with a legend
     # for _, row in gage_gdf.iterrows():
     #     ax_map.annotate(row["gage_id"], xy=(row.geometry.x, row.geometry.y), fontsize=8)
     # Assign index numbers to gages
@@ -318,7 +338,7 @@ if annotate:
         f"{int(row.label_num)}. {row.gage_id}" for _, row in gage_gdf.iterrows()
     ])
 
-    # Add the key as a fixed-position text box over Nevada
+    # Add the key as a fixed-position text box
     ax_map.text(
         maxx - 0.5, maxy - 0.3,  # adjust as needed
         f"Gage ID Key:\n{key_text}",
@@ -389,7 +409,7 @@ ax_kge.set_xticklabels(wrapped_labels, fontsize=9)
 ax_kge.set_ylim(-0.5,1.0)
 ax_kge.set_title("Validation KGE")
 
-# 2-4) Error plots
+# 2-4 Error plots
 error_plots = [
     (ax_vol,  'volume_error_percent',      "Volume Error (abs %)"),
     (ax_peak, 'peak_flow_error_percent',    "Peak Flow Error (abs %)"),
@@ -510,8 +530,6 @@ ncols = len(colLabels)
 for col in range(ncols):
     tbl[(0, col)].set_height(header_height)
 
-# (You can still scale the DATA rows if you like:)
-# tbl.scale(1, 1.1)
 
 tbl.scale(1.0,1.3)
 
@@ -523,7 +541,7 @@ plt.tight_layout()
 plt.savefig("best_model_map.png", dpi=300)
 plt.show()
 
-print(" Saved updated figure with larger map, tables, and borders.")
+print(" Saved updated figure with map, tables, and borders.")
 
 
 
@@ -534,7 +552,6 @@ if plot_hydrographs:
 
     from datetime import datetime
 
-    # output_dir = "/Users/peterlafollette/NextGenSandboxHub/hydrograph_plots/broad_comparisons"
     output_dir = os.path.join(project_root, "model_assessment", "comparison_plots")
     os.makedirs(output_dir, exist_ok=True)
 

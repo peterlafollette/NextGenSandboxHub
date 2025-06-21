@@ -1,5 +1,7 @@
 ###############################################################
 # Author      : Peter La Follette [plafollette@lynker.com | April 2025]
+# Calibrates lasam+pet+t-route or lasam+t-route+NOM, if NOM is in the model formulation then some of its parameters will be calibrated
+# currently tiled formulations are supported (up to 2 tiles), however each tile will be a different instance of lasam+pet+t-route or lasam+t-route+NOM rather than able to be based on cfe
 
 import os
 import subprocess
@@ -18,19 +20,14 @@ import yaml
 import json
 import shutil 
 
-
 np.random.seed(42)
 random.seed(42)
 
 # === CONFIGURATION ===
 n_particles = 2 #15
 n_iterations = 2 #50 #so total number of model runs at a gage will be equal to n_particles*n_iterations
-max_cores_for_gages = 2 #11  # How many gages to calibrate in parallel
+max_cores_for_gages = 2 #11  # How many gages to calibrate in parallel. I recommend that this should be the number of cores your machine has or that number - 1.
 
-# project_root = "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
-# logging_dir = os.path.join(project_root, "logging")
-# sandbox_path = "/Users/peterlafollette/NextGenSandboxHub/sandbox.py"
-# os.makedirs(logging_dir, exist_ok=True)
 
 from model_assessment.configs import path_config as cfg
 with open("model_assessment/configs/time_config.yaml", "r") as f:
@@ -47,9 +44,13 @@ logging_dir = cfg.logging_dir
 sandbox_path = cfg.sandbox_path
 observed_q_root = cfg.observed_q_root
 
-def clear_terminal():
+def clear_terminal(): #this runs regularly because verbose output from nextgen can be a lot
     os.system('clear')  # 'cls' for Windows
 
+### As I was attempting my first calibration runs with 10s of gages running in parallel and hundreds of iterations on MacOS, I had spotlight indexing on.
+### It is actually the case that you can run out of disk space if spotlight indexing is on and it includes outputs from nextgen, because nextgen model outputs amount to a huge amount of data written per day
+### To address this, all directories that will contain nextgen outputs at the divide scale, as well as the t-route outputs, will have a .metadata_never_index file created with them during the -conf step in NextGenSandboxHub.
+### This should make spotlight indexing skip these files and avoid the issue where the available disk space goes to 0, but just to be sure, this function stops the calibration execution in the event that disk space gets too low 
 def check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
     # Check for stop file
     stop_file = os.path.join(project_root, "STOP_NOW.txt")
@@ -68,17 +69,11 @@ def check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
     return False
 
 
-# === OBSERVED DATA ===
-# def get_observed_q(observed_path):
-#     df = pd.read_csv(observed_path, parse_dates=['value_time'])
-#     df.set_index('value_time', inplace=True)
-#     return df['flow_m3_per_s'].resample('1h').mean()
-
 def get_observed_q(observed_path):
     df = pd.read_csv(observed_path, parse_dates=['value_time'])
     df.set_index('value_time', inplace=True)
     
-    # Optional: raise error or warning if data isn't hourly
+    # warning if data isn't hourly
     expected_freq = pd.infer_freq(df.index)
     if expected_freq != 'h':
         print(f"Warning: Observed data in {observed_path} is not hourly (inferred freq: {expected_freq})")
@@ -101,12 +96,10 @@ def extract_tile_params(full_params, tile_idx, n_tiles):
     chunk_size = total_len // n_tiles
     return full_params[tile_idx * chunk_size : (tile_idx + 1) * chunk_size]
 
-
+# extracts parameters from lasam and NOM config files or tables 
 def extract_initial_params(example_config_path):
     with open(example_config_path) as f:
         lines = f.readlines()
-
-    # print(f"Reading LASAM config: {example_config_path}")
 
     soil_types_line = next(line for line in lines if line.startswith("layer_soil_type="))
     soil_types = list(map(int, soil_types_line.strip().split("=")[1].split(",")))
@@ -140,7 +133,7 @@ def extract_initial_params(example_config_path):
 
     # === NOM parameter extraction (new logic)
     config_root = os.path.dirname(os.path.dirname(example_config_path))  # trims off /lasam
-    nom_dir = os.path.join(config_root, "nom")
+    nom_dir = os.path.join(config_root, "noahowp")
     nom_params = []
 
     if os.path.isdir(nom_dir):
@@ -174,7 +167,7 @@ def extract_initial_params(example_config_path):
     return layer_params + [a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1] + nom_params
 
 
-
+#
 def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None, include_nom=False, n_tiles=2, weights=None):
     params, particle_idx, gage_id, observed_q_root = args
 
@@ -204,7 +197,7 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
                 update_lasam_files_for_divide(os.path.join(config_dir, fname), tile_params, include_nom)
 
             if include_nom:
-                nom_template = os.path.join(tile_root, f"out/{gage_id}/configs/nom/parameters/MPTABLE.TBL")
+                nom_template = os.path.join(tile_root, f"out/{gage_id}/configs/noahowp/parameters/MPTABLE.TBL")
                 update_mptable(
                     original_file=nom_template,
                     output_file=nom_template,
@@ -232,13 +225,6 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
             # Set calibration period only
             realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
             realization_config["time"]["end_time"]   = cal_end.strftime("%Y-%m-%d %H:%M:%S")
-            # if full_period:
-            #     realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
-            #     realization_config["time"]["end_time"]   = val_end.strftime("%Y-%m-%d %H:%M:%S")
-            # else:
-            #     realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
-            #     realization_config["time"]["end_time"]   = cal_end.strftime("%Y-%m-%d %H:%M:%S")
-
 
             with open(realization_path, "w") as f:
                 json.dump(realization_config, f, indent=4)
@@ -262,24 +248,26 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
             with open(troute_path, "w") as f:
                 yaml.dump(troute_cfg, f)
 
+            # Determine tile-specific sandbox config path
+            tile_config_filename = f"sandbox_config_tile{tile + 1}.yaml"
+            tile_sandbox_config = os.path.join(cfg.project_root, "configs", tile_config_filename)
 
-            # Run the model
+            print(f"Running model for tile {tile} using config: {tile_sandbox_config}")
+
             subprocess.call([
-                "python", sandbox_path, "-run",
+                "python", sandbox_path,
+                "-i", tile_sandbox_config,
+                "-run",
                 "--gage_id", gage_id
             ], cwd=tile_root)
 
 
-
-        
             output_path = os.path.join(tile_root, "postproc", f"{gage_id}_particle_{particle_idx}.csv")
             get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
             subprocess.call(
                 ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", tile_root],
                 cwd=os.path.join(tile_root, "postproc")
             )
-
-
 
             sim_path = os.path.join(postproc_dir, f"{gage_id}_particle_{particle_idx}.csv")
             sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
@@ -350,9 +338,6 @@ def run_validation_with_best(gage_id, logging_dir, observed_q_root, base_roots, 
     # Restore original calibration end time
     cal_end = original_cal_end
 
-    # print(" Final validation metrics:")
-    # print(val_metrics['kge'])
-
     return val_metrics
 
 
@@ -381,7 +366,7 @@ def update_lasam_files_for_divide(config_path, params, include_nom):
     log_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 = lasam_slice
     a = 10 ** log_a
 
-    # Optional: debug log
+    # debug log
     # print(f"LASAM params being written: a={a:.4e}, b={b}, frac_to_GW={frac_to_GW}, spf_factor={spf_factor}, theta_e_1={theta_e_1}, field_capacity_psi={field_capacity_psi}")
 
     # === Update config file (in-place)
@@ -622,7 +607,7 @@ class PSO:
                             f"MP_{tile}": nom_params[5]
                         })
                 ###
-                # Optional: add weights to log
+                # add weights to log
                 if self.n_tiles == 2 and len(p.position) == len(self.bounds):  # weight param is included
                     weight_tile0 = p.position[-1]
                     weight_tile1 = 1.0 - weight_tile0
@@ -729,39 +714,13 @@ class PSO:
             pd.DataFrame([final_row])
         ]).to_csv(log_path, index=False)
 
-
-        # try:
-        #     sim_dfs = []
-        #     for tile in range(self.n_tiles):
-        #         tile_params = extract_tile_params(self.global_best_position, tile, self.n_tiles)
-        #         postproc_dir = os.path.join(self.base_roots[tile], "postproc")
-        #         # Identify which particle produced the global best
-        #         best_idx = np.argmin([p.best_value for p in self.particles])
-        #         sim_path = os.path.join(postproc_dir, f"{self.gage_id}_particle_{best_idx}.csv")
-        #         sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
-        #         sim_dfs.append(sim_df['flow'].resample('1h').mean())
-
-        #     avg_sim = sum(w * s for w, s in zip(self.weights, sim_dfs))
-
-        #     best_path = os.path.join(self.base_roots[0], "postproc", f"{self.gage_id}_best.csv")
-        #     pd.DataFrame({"current_time": avg_sim.index, "flow": avg_sim.values}).to_csv(best_path, index=False)
-        #     print(f"Final best hydrograph written to {best_path}")
-        # except Exception as e:
-        #     print(f"Could not save final best hydrograph for {self.gage_id}: {e}")
-
         return self.global_best_position, self.global_best_value, best_validation_metric, datetime.now() - start_time
 
 
 
 # === PER-GAGE WRAPPER ===
 def calibrate_gage(gage_id):
-    # Fixed paths
-    # observed_q_root = "/Users/peterlafollette/NextGenSandboxHub"
     observed_q_root = cfg.observed_q_root
-    # model_roots = [
-    #     "/Users/peterlafollette/NextGenSandboxHub_model1",
-    #     "/Users/peterlafollette/NextGenSandboxHub_model2"
-    # ]
     model_roots = cfg.model_roots
     n_tiles = len(model_roots)
 
@@ -785,7 +744,7 @@ def calibrate_gage(gage_id):
             tile_init = extract_initial_params(example_path)
 
             # Convert 'a' to log10
-            include_nom = os.path.isdir(os.path.join(root, f"out/{gage_id}/configs/nom"))
+            include_nom = os.path.isdir(os.path.join(root, f"out/{gage_id}/configs/noahowp"))
             a_index = -12 if include_nom else -6
             tile_init[a_index] = np.log10(tile_init[a_index])
 

@@ -2,7 +2,7 @@
 # Author  : Ahmad Jan
 # Contact : ahmad.jan@noaa.gov
 # Date    : September 28, 2023
-# minor edits from Peter La Follette (plafollette@lynker.com) May 2025
+# edits from Peter La Follette (plafollette@lynker.com) May 2025
 ############################################################################################
 
 import os

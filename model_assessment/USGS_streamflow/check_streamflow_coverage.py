@@ -1,3 +1,8 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | June 2025]
+# This script reads the .csv at basins_csv_path, determines which of the USGS gages in this .csv have data coverage >30% for both the calibration and validation periods specified in configs/time_config.yaml, 
+# and then overwrites the original .csv with only the sites that had sufficient coverage. 
+
 import os
 import pandas as pd
 from datetime import datetime

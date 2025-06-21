@@ -1,8 +1,7 @@
-# make sure to install yaml package using install.packages("yaml") if not installed already
-
 sandbox_dir  : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
 input_dir     : "/Users/peterlafollette/CIROH_project/in"  # user-specified
 output_dir    : "/Users/peterlafollette/CIROH_project/model1/out" # user-specified
+# output_dir    : "/Users/peterlafollette/CIROH_project/model2/out" # user-specified
 
 
 ########################################################################
@@ -38,8 +37,10 @@ forcings :
 ########################################################################
 formulation :
   ngen_dir           : "/Users/peterlafollette/CIROH_project/ngen" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
-  # models             : "NOM, CFE, T-route"
+  # models             : "PET, CFE, T-route"
   models             : "PET, LASAM, T-route"
+  # models             : "NOM, LASAM, T-route"
+  # models             : "NOM, CFE, T-route"
 
   clean              : ['existing']
   verbosity          : 0
@@ -50,8 +51,8 @@ formulation :
 
 simulation :
   task_type : "control" # calibvalid, calibration, validation, restart, control
-  simulation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
-  # simulation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2013-09-30 23:00:00"}
+  # simulation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+  simulation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2013-09-30 23:00:00"}
   calibration_time : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
   calib_eval_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
   validation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}

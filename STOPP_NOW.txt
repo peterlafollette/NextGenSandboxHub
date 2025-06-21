@@ -1,1 +1,1 @@
-Stop signal triggered.
+Stop signal triggered. Rename this file to "STOP_NOW.txt" to terminate a calibration run from model_assessment/calib_scripts.

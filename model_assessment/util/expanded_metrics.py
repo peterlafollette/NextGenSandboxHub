@@ -1,3 +1,7 @@
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | April 2025]
+# used in compare_and_map to give abs percent error in volume, abs percent error in peak discharge, and error in time to peak as additional error metrics after calibration based on KGE
+
 import numpy as np
 import pandas as pd
 from hydroeval import kge

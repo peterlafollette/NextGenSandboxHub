@@ -1,4 +1,7 @@
-# Refactored PSO calibration script for CFE
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | May 2025]
+# Calibrates cfe+pet+t-route or cfe+t-route+NOM, if NOM is in the model formulation then some of its parameters will be calibrated
+# currently just 1 tile is supported
 
 import os
 import subprocess
@@ -24,9 +27,6 @@ random.seed(42)
 n_particles = 2
 n_iterations = 2
 max_cores_for_gages = 2
-project_root = "/Users/peterlafollette/NextGenSandboxHub"
-logging_dir = os.path.join(project_root, "logging")
-os.makedirs(logging_dir, exist_ok=True)
 metric_to_calibrate_on = "kge"  # "kge", "log_kge", or "event_kge"
 
 from model_assessment.configs import path_config as cfg
@@ -43,11 +43,16 @@ logging_dir = cfg.logging_dir
 sandbox_path = cfg.sandbox_path
 observed_q_root = cfg.observed_q_root
 
+os.makedirs(logging_dir, exist_ok=True)
+
 
 def clear_terminal():
     os.system('clear')
 
-
+### As I was attempting my first calibration runs with 10s of gages running in parallel and hundreds of iterations on MacOS, I had spotlight indexing on.
+### It is actually the case that you can run out of disk space if spotlight indexing is on and it includes outputs from nextgen, because nextgen model outputs amount to a huge amount of data written per day
+### To address this, all directories that will contain nextgen outputs at the divide scale, as well as the t-route outputs, will have a .metadata_never_index file created with them during the -conf step in NextGenSandboxHub.
+### This should make spotlight indexing skip these files and avoid the issue where the available disk space goes to 0, but just to be sure, this function stops the calibration execution in the event that disk space gets too low 
 def check_for_stop_signal_or_low_disk():
     stop_file = os.path.join(project_root, "STOP_NOW.txt")
     if os.path.exists(stop_file):
@@ -80,12 +85,85 @@ param_names = [
     "Klf", "refkdt", "slope", "wltsmc", "alpha_fc", "Kinf_nash_surface"
 ]
 
+# === NOM PARAMETERS (only used if NOM present) ===
+nom_param_names = ["MFSNO", "RSURF_SNOW", "HVT", "CWPVT", "VCMX25", "MP"]
+nom_param_bounds = [
+    (0.625, 5.0),
+    (0.1, 100.0),
+    (0.0, 20.0),
+    (0.18, 5.0),
+    (0.0, 80.0),
+    (3.6, 12.6)
+]
+
+
 log_scale_params = {"Cgw": True, "satdk": True}
 
+param_bounds_dict = dict(zip(param_names, param_bounds))
 
 # === HELPERS ===
 def transform_params(params):
     return [10**p if log_scale_params.get(name, False) else p for name, p in zip(param_names, params)]
+
+
+def detect_and_read_nom_params(gage_id):
+    nom_dir = os.path.join(cfg.model_roots[0], f"out/{gage_id}/configs/noahowp/parameters")
+    mptable_path = os.path.join(nom_dir, "MPTABLE.TBL")
+    if not os.path.exists(mptable_path):
+        return False, [], ""
+
+    try:
+        with open(mptable_path) as f:
+            lines = f.readlines()
+
+        nom_params = {}
+        for line in lines:
+            if "=" not in line or line.strip().startswith("!"):
+                continue
+            key, val = line.split("=", 1)
+            name = key.strip()
+            if name in nom_param_names:
+                val = val.split("!")[0].split(",")[0].strip()
+                nom_params[name] = float(val)
+
+        if set(nom_params.keys()) != set(nom_param_names):
+            raise ValueError(f"NOM param mismatch in {mptable_path}")
+
+        return True, [nom_params[n] for n in nom_param_names], mptable_path
+
+    except Exception as e:
+        print(f"Error parsing NOM params from {mptable_path}: {e}")
+        return False, [], mptable_path
+
+def extract_initial_nom_params(nom_file_path):
+    """
+    Extract initial NOM parameters from a MPTABLE.TBL file.
+    Only the first value from each line is used (even if multiple are listed).
+    """
+    nom_param_names = ["MFSNO", "RSURF_SNOW", "HVT", "CWPVT", "VCMX25", "MP"]
+    nom_params_dict = {}
+
+    try:
+        with open(nom_file_path) as f:
+            lines = f.readlines()
+
+        for line in lines:
+            if '=' not in line or line.strip().startswith('!'):
+                continue
+            key, value = line.split('=', 1)
+            param_name = key.strip()
+            if param_name in nom_param_names:
+                value_str = value.split('!')[0]
+                values = [v.strip() for v in value_str.split(',') if v.strip()]
+                nom_params_dict[param_name] = float(values[0])
+
+        if set(nom_params_dict.keys()) != set(nom_param_names):
+            raise ValueError(f"Found NOM parameters {list(nom_params_dict.keys())}, expected {nom_param_names}. Check formatting in {nom_file_path}")
+
+        return [nom_params_dict[p] for p in nom_param_names]
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse NOM parameters from {nom_file_path}: {e}")
 
 
 def extract_initial_cfe_params(config_path):
@@ -173,7 +251,7 @@ def regenerate_cfe_config(config_dir, params):
 # === OBJECTIVE FUNCTION ===
 def objective_function(args):
     import json
-    params, particle_idx, gage_id, config_path, observed_path, postproc_base_path = args
+    params, particle_idx, gage_id, config_path, observed_path, postproc_base_path, include_nom, nom_file_path = args
 
     true_params = transform_params(params)
     if check_for_stop_signal_or_low_disk():
@@ -183,6 +261,16 @@ def objective_function(args):
     print(f"\nEvaluating particle {particle_idx} for gage {gage_id}")
 
     regenerate_cfe_config(config_path, true_params)
+
+    if include_nom:
+        nom_params = dict(zip(nom_param_names, params[-6:]))
+        update_mptable(
+            original_file=nom_file_path,
+            output_file=nom_file_path,
+            updated_params=nom_params,
+            verbose=False
+        )
+
 
     try:
         # === Update realization JSON to use spinup + calibration only ===
@@ -307,8 +395,8 @@ class Particle:
 
 
 class PSO:
-    def __init__(self, n_particles, bounds, n_iterations, gage_id, config_path, observed_path, postproc_base_path, metric_to_calibrate_on="kge"):
-        self.particles = [Particle(bounds, init_position=extract_initial_cfe_params(config_path) if i == 0 else None) for i in range(n_particles)]
+    def __init__(self, n_particles, bounds, n_iterations, gage_id, init_position, config_path, observed_path, postproc_base_path, metric_to_calibrate_on="kge", include_nom=False, nom_file_path="", param_names=None):
+        self.particles = [Particle(bounds, init_position=init_position if i == 0 else None) for i in range(n_particles)]
         self.bounds = bounds
         self.n_iterations = n_iterations
         self.gage_id = gage_id
@@ -320,6 +408,9 @@ class PSO:
         self.metric_to_calibrate_on = metric_to_calibrate_on
         self.best_cal_metrics = {}
         self.best_val_metrics = {}
+        self.include_nom = include_nom
+        self.nom_file_path = nom_file_path
+        self.param_names = param_names if param_names else param_names
 
     def optimize(self):
         start_time = datetime.now()
@@ -335,7 +426,7 @@ class PSO:
 
             results = [
                 objective_function(
-                    (p.position, i, self.gage_id, self.config_path, self.observed_path, self.postproc_base_path)
+                    (p.position, i, self.gage_id, self.config_path, self.observed_path, self.postproc_base_path, self.include_nom, self.nom_file_path)
                 )
                 for i, p in enumerate(self.particles)
             ]
@@ -383,7 +474,7 @@ class PSO:
                     particle.reset(self.bounds)
 
                 # Logging each particle
-                param_dict = {name: val for name, val in zip(param_names, particle.position)}
+                param_dict = {name: val for name, val in zip(self.param_names, particle.position)}
                 row = {
                     "iteration": iteration + 1,
                     "particle": idx,
@@ -412,27 +503,23 @@ class PSO:
         }
         calibration_field, validation_field = metric_to_log_fields[self.metric_to_calibrate_on]
 
-        # summary_row = {
-        #     "iteration": "BEST",
-        #     "particle": "BEST",
-        #     calibration_field: self.best_calibration_metric,
-        #     validation_field: self.best_validation_metric,
-        #     "kge_calibration": self.best_cal_metrics.get("kge", np.nan),
-        #     "kge_validation": self.best_val_metrics.get("kge", np.nan),
-        #     "log_kge_calibration": self.best_cal_metrics.get("log_kge", np.nan),
-        #     "log_kge_validation": self.best_val_metrics.get("log_kge", np.nan),
-        #     "event_kge_calibration": self.best_cal_metrics.get("event_kge", np.nan),
-        #     "event_kge_validation": self.best_val_metrics.get("event_kge", np.nan),
-        #     **param_dict
-        # }
-
-
         # === Final full-period run using best parameters ===
         print(f"\nRunning final full-period validation for {self.gage_id}...")
 
         # Write best params to config
         true_best_params = transform_params(self.global_best_position)
         regenerate_cfe_config(self.config_path, true_best_params)
+
+        if self.include_nom:
+            nom_vals = self.global_best_position[-6:]
+            nom_param_dict = dict(zip(nom_param_names, nom_vals))
+            update_mptable(
+                original_file=self.nom_file_path,
+                output_file=self.nom_file_path,
+                updated_params=nom_param_dict,
+                verbose=False
+            )
+
 
         # Update realization to use full period
         json_dir = os.path.join(cfg.model_roots[0], "out", self.gage_id, "json")
@@ -492,7 +579,7 @@ class PSO:
             final_summary = {
                 "iteration": "FINAL",
                 "particle": "BEST",
-                **{name: val for name, val in zip(param_names, self.global_best_position)},
+                **{name: val for name, val in zip(self.param_names, self.global_best_position)},
                 f"{self.metric_to_calibrate_on}_calibration": self.best_cal_metrics.get(self.metric_to_calibrate_on, np.nan),
                 f"{self.metric_to_calibrate_on}_validation": val_metrics_final.get(self.metric_to_calibrate_on, np.nan)
             }
@@ -508,22 +595,6 @@ class PSO:
             else:
                 print(f" Final validation metric '{metric_key}' not found.")
 
-
-            # update the log file
-            # final_row = {
-            #     "iteration": "FINAL_FULL",
-            #     "particle": "BEST",
-            #     **{name: val for name, val in zip(param_names, self.global_best_position)},
-            #     "kge_validation": val_metrics_final.get("kge", np.nan),
-            #     "log_kge_validation": val_metrics_final.get("log_kge", np.nan),
-            #     "event_kge_validation": val_metrics_final.get("event_kge", np.nan),
-            # }
-
-            # pd.concat([
-            #     pd.read_csv(log_path),
-            #     pd.DataFrame([final_row])
-            # ]).to_csv(log_path, index=False)
-
         except Exception as e:
             print(f"Warning: Could not compute final validation metrics: {e}")
 
@@ -533,24 +604,58 @@ class PSO:
 
 # === PER-GAGE WRAPPER ===
 def calibrate_gage(gage_id):
-    model_root = cfg.model_roots[0]
-    tile_root = model_root
-    config_dir = os.path.join(model_root, f"out/{gage_id}/configs/cfe")
-    config_path = os.path.join(config_dir, sorted(f for f in os.listdir(config_dir) if f.startswith("cfe_config_cat"))[0])
-    # observed_path = os.path.join(project_root, f"USGS_streamflow/successful_sites_resampled/{gage_id}.csv")
-    observed_path = os.path.join(observed_q_root, "successful_sites_resampled", f"{gage_id}.csv")
-    postproc_base_path = os.path.join(model_root, "postproc")
+    import os
+    import numpy as np
 
+    observed_q_root = cfg.observed_q_root
+    model_roots = cfg.model_roots
+    root = model_roots[0]  # single-tile for now
+
+    config_dir = os.path.join(root, f"out/{gage_id}/configs/cfe")
+    if not os.path.exists(config_dir):
+        print(f"Missing config dir for gage {gage_id}: {config_dir}")
+        return
+
+    config_path = os.path.join(config_dir, sorted(f for f in os.listdir(config_dir) if f.startswith("cfe_config_cat"))[0])
+    observed_path = os.path.join(observed_q_root, "successful_sites_resampled", f"{gage_id}.csv")
+    postproc_base_path = os.path.join(root, "postproc")
+
+    # === Extract initial CFE parameters
+    init_vals = extract_initial_cfe_params(config_path)
+    bounds = param_bounds.copy()
+    names = param_names.copy()
+
+    # === Check for NOM config
+    nom_config_dir = os.path.join(root, f"out/{gage_id}/configs/noahowp")
+    include_nom = os.path.isdir(nom_config_dir)
+
+    if include_nom:
+        nom_file_path = os.path.join(nom_config_dir, "parameters", "MPTABLE.TBL")
+        nom_init_vals = extract_initial_nom_params(nom_file_path)
+        init_vals += nom_init_vals
+        bounds += nom_param_bounds
+        names += nom_param_names
+
+    if len(init_vals) != len(bounds):
+        raise ValueError(f"init_vals length {len(init_vals)} does not match bounds length {len(bounds)}")
+
+    # === Launch PSO
     pso = PSO(
-        n_particles,
-        param_bounds,
-        n_iterations,
-        gage_id,
-        config_path,
-        observed_path,
-        postproc_base_path,
-        metric_to_calibrate_on="kge"
+        n_particles=n_particles,
+        bounds=bounds,
+        n_iterations=n_iterations,
+        gage_id=gage_id,
+        init_position=init_vals,
+        config_path=config_path,
+        observed_path=observed_path,
+        postproc_base_path=postproc_base_path,
+        metric_to_calibrate_on="kge",
+        include_nom=include_nom,
+        nom_file_path=nom_file_path if include_nom else None,
+        param_names=names
     )
+
+
     best_params, best_obj_value, best_val_metric, runtime = pso.optimize()
 
 
@@ -609,9 +714,11 @@ if __name__ == "__main__":
 
 
 
-
-
-# # Refactored PSO calibration script for CFE, is slower because always runs validation period 
+# ##works but only supports 1 tile and no NOM calibration 
+# ###############################################################
+# # Author      : Peter La Follette [plafollette@lynker.com | May 2025]
+# # Calibrates cfe+pet+t-route or cfe+t-route+NOM, if NOM is in the model formulation then some of its parameters will be calibrated
+# # currently just 1 tile is supported
 
 # import os
 # import subprocess
@@ -628,17 +735,15 @@ if __name__ == "__main__":
 # from model_assessment.util.metrics import compute_metrics
 # from model_assessment.util.update_NOM import update_mptable
 # import yaml
+# import json
 
 # np.random.seed(42)
 # random.seed(42)
 
 # # === CONFIGURATION ===
-# n_particles = 1
-# n_iterations = 1
-# max_cores_for_gages = 1
-# project_root = "/Users/peterlafollette/NextGenSandboxHub"
-# logging_dir = os.path.join(project_root, "logging")
-# os.makedirs(logging_dir, exist_ok=True)
+# n_particles = 2
+# n_iterations = 2
+# max_cores_for_gages = 2
 # metric_to_calibrate_on = "kge"  # "kge", "log_kge", or "event_kge"
 
 # from model_assessment.configs import path_config as cfg
@@ -655,11 +760,16 @@ if __name__ == "__main__":
 # sandbox_path = cfg.sandbox_path
 # observed_q_root = cfg.observed_q_root
 
+# os.makedirs(logging_dir, exist_ok=True)
+
 
 # def clear_terminal():
 #     os.system('clear')
 
-
+# ### As I was attempting my first calibration runs with 10s of gages running in parallel and hundreds of iterations on MacOS, I had spotlight indexing on.
+# ### It is actually the case that you can run out of disk space if spotlight indexing is on and it includes outputs from nextgen, because nextgen model outputs amount to a huge amount of data written per day
+# ### To address this, all directories that will contain nextgen outputs at the divide scale, as well as the t-route outputs, will have a .metadata_never_index file created with them during the -conf step in NextGenSandboxHub.
+# ### This should make spotlight indexing skip these files and avoid the issue where the available disk space goes to 0, but just to be sure, this function stops the calibration execution in the event that disk space gets too low 
 # def check_for_stop_signal_or_low_disk():
 #     stop_file = os.path.join(project_root, "STOP_NOW.txt")
 #     if os.path.exists(stop_file):
@@ -784,6 +894,7 @@ if __name__ == "__main__":
 
 # # === OBJECTIVE FUNCTION ===
 # def objective_function(args):
+#     import json
 #     params, particle_idx, gage_id, config_path, observed_path, postproc_base_path = args
 
 #     true_params = transform_params(params)
@@ -796,38 +907,51 @@ if __name__ == "__main__":
 #     regenerate_cfe_config(config_path, true_params)
 
 #     try:
+#         # === Update realization JSON to use spinup + calibration only ===
+#         json_dir = os.path.join(cfg.model_roots[0], "out", gage_id, "json")
+#         realization_path = [f for f in os.listdir(json_dir) if f.endswith(".json")][0]
+#         realization_path = os.path.join(json_dir, realization_path)
+
+#         with open(realization_path, "r") as f:
+#             realization_config = json.load(f)
+
+#         realization_config["time"]["start_time"] = time_cfg["spinup_start"]
+#         realization_config["time"]["end_time"]   = time_cfg["cal_end"]
+
+#         with open(realization_path, "w") as f:
+#             json.dump(realization_config, f, indent=4)
+
+#         # === Update troute_config.yaml ===
+#         troute_path = os.path.join(cfg.model_roots[0], "out", gage_id, "configs", "troute_config.yaml")
+#         with open(troute_path, "r") as f:
+#             troute_cfg = yaml.safe_load(f)
+
+#         spinup_start = pd.Timestamp(time_cfg["spinup_start"])
+#         nts = int((cal_end - spinup_start) / pd.Timedelta(seconds=300))
+#         troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
+#         troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts
+
+#         with open(troute_path, "w") as f:
+#             yaml.dump(troute_cfg, f)
+
+#         # === Run the model ===
 #         subprocess.call(["python", "sandbox.py", "-run", "--gage_id", gage_id], cwd=project_root)
+
+#         # === Extract output ===
 #         env = os.environ.copy()
 #         env["PARTICLE_ID"] = str(particle_idx)
 
-#         # subprocess.call(["python", "get_hydrograph.py", "--gage_id", gage_id], cwd=os.path.join(project_root, "postproc"), env=env)
 #         get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
 #         tile_root = cfg.model_roots[0]
 #         output_path = os.path.join(tile_root, "postproc", f"{gage_id}_particle_{particle_idx}.csv")
-#         # output_path = postproc_base_path
-#         postproc_dir = os.path.join(cfg.model_roots[0], "postproc")
-#         # subprocess.call(
-#         #     # ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", tile_root],
-#         #     ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", postproc_dir],
-#         #     # cwd=os.path.join(tile_root, "postproc")
-#         #     cwd=os.path.join(postproc_dir)
-#         # )
-#         postproc_dir = os.path.join(tile_root, "postproc")
+
 #         subprocess.call(
 #             ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", tile_root],
-#             cwd=postproc_dir
+#             cwd=os.path.join(tile_root, "postproc")
 #         )
 
-
-#         # postproc_dir = os.path.join(cfg.model_roots[0], "postproc")
-#         # subprocess.call(["python", "get_hydrograph.py", "--gage_id", gage_id], cwd=postproc_dir, env=env)
-
-#         sim_path = os.path.join(postproc_base_path, f"{gage_id}_particle_{particle_idx}.csv")
-#         sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')['flow'].resample('1h').mean()
+#         sim_df = pd.read_csv(output_path, parse_dates=['current_time']).set_index('current_time')['flow'].resample('1h').mean()
 #         obs_df = get_observed_q(observed_path)
-
-#         cal_start = pd.Timestamp("2014-10-01"); cal_end = pd.Timestamp("2018-09-30")
-#         val_start = pd.Timestamp("2018-10-01"); val_end = pd.Timestamp("2020-09-30")
 
 #         sim_cal, obs_cal = sim_df[cal_start:cal_end].dropna(), obs_df[cal_start:cal_end].dropna()
 #         sim_val, obs_val = sim_df[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
@@ -839,13 +963,14 @@ if __name__ == "__main__":
 #             sim_val.iloc[-1] += 1e-8
 #             obs_val.iloc[-1] += 1e-8
 
+#         if len(sim_cal) > 0 and len(obs_cal) > 0:
+#             sim_cal.iloc[-1] += 1e-8
+#             obs_cal.iloc[-1] += 1e-8
+
 #         cal_metrics = compute_metrics(sim_cal, obs_cal, event_threshold=1e-2)
 #         val_metrics = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
 
-#         metric_calibration = cal_metrics[metric_to_calibrate_on]
-#         objective_value = -metric_calibration
-
-#         return objective_value, val_metrics, cal_metrics
+#         return -cal_metrics[metric_to_calibrate_on], val_metrics, cal_metrics
 
 #     except Exception as e:
 #         print(f"Error during evaluation: {e}")
@@ -926,7 +1051,7 @@ if __name__ == "__main__":
 #         w_start, w_end = 0.9, 0.4
 
 #         for iteration in range(self.n_iterations):
-#             # clear_terminal()
+#             clear_terminal()
 #             print(f"\n--- Iteration {iteration + 1} for gage {self.gage_id} ---")
 #             w = w_start - (w_start - w_end) * (iteration / self.n_iterations)
 
@@ -985,12 +1110,8 @@ if __name__ == "__main__":
 #                     "iteration": iteration + 1,
 #                     "particle": idx,
 #                     **param_dict,
-#                     "kge_calibration": cal_metrics.get("kge", np.nan),
-#                     "kge_validation": val_metrics.get("kge", np.nan),
-#                     "log_kge_calibration": cal_metrics.get("log_kge", np.nan),
-#                     "log_kge_validation": val_metrics.get("log_kge", np.nan),
-#                     "event_kge_calibration": cal_metrics.get("event_kge", np.nan),
-#                     "event_kge_validation": val_metrics.get("event_kge", np.nan)
+#                     f"{self.metric_to_calibrate_on}_calibration": cal_metrics.get(self.metric_to_calibrate_on, np.nan),
+#                     f"{self.metric_to_calibrate_on}_validation": val_metrics.get(self.metric_to_calibrate_on, np.nan)
 #                 }
 #                 log_rows.append(row)
 
@@ -1013,21 +1134,91 @@ if __name__ == "__main__":
 #         }
 #         calibration_field, validation_field = metric_to_log_fields[self.metric_to_calibrate_on]
 
-#         summary_row = {
-#             "iteration": "BEST",
-#             "particle": "BEST",
-#             calibration_field: self.best_calibration_metric,
-#             validation_field: self.best_validation_metric,
-#             "kge_calibration": self.best_cal_metrics.get("kge", np.nan),
-#             "kge_validation": self.best_val_metrics.get("kge", np.nan),
-#             "log_kge_calibration": self.best_cal_metrics.get("log_kge", np.nan),
-#             "log_kge_validation": self.best_val_metrics.get("log_kge", np.nan),
-#             "event_kge_calibration": self.best_cal_metrics.get("event_kge", np.nan),
-#             "event_kge_validation": self.best_val_metrics.get("event_kge", np.nan),
-#             **param_dict
-#         }
+#         # === Final full-period run using best parameters ===
+#         print(f"\nRunning final full-period validation for {self.gage_id}...")
 
-#         pd.DataFrame(log_rows + [summary_row]).to_csv(log_path, index=False)
+#         # Write best params to config
+#         true_best_params = transform_params(self.global_best_position)
+#         regenerate_cfe_config(self.config_path, true_best_params)
+
+#         # Update realization to use full period
+#         json_dir = os.path.join(cfg.model_roots[0], "out", self.gage_id, "json")
+#         realization_path = [f for f in os.listdir(json_dir) if f.endswith(".json")][0]
+#         realization_path = os.path.join(json_dir, realization_path)
+
+#         with open(realization_path, "r") as f:
+#             realization_config = json.load(f)
+
+#         realization_config["time"]["start_time"] = time_cfg["spinup_start"]
+#         realization_config["time"]["end_time"]   = time_cfg["val_end"]
+
+#         with open(realization_path, "w") as f:
+#             json.dump(realization_config, f, indent=4)
+
+#         # Update troute_config.yaml again
+#         troute_path = os.path.join(cfg.model_roots[0], "out", self.gage_id, "configs", "troute_config.yaml")
+#         with open(troute_path, "r") as f:
+#             troute_cfg = yaml.safe_load(f)
+
+#         spinup_start = pd.Timestamp(time_cfg["spinup_start"])
+#         val_end = pd.Timestamp(time_cfg["val_end"])
+#         nts_full = int((val_end - spinup_start) / pd.Timedelta(seconds=300))
+#         troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
+#         troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts_full
+
+#         with open(troute_path, "w") as f:
+#             yaml.dump(troute_cfg, f)
+
+#         # Run model
+#         subprocess.call(["python", "sandbox.py", "-run", "--gage_id", self.gage_id], cwd=project_root)
+
+#         # Extract and overwrite final best hydrograph
+#         get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
+#         output_path = os.path.join(self.postproc_base_path, f"{self.gage_id}_best.csv")
+#         subprocess.call(
+#             ["python", get_hydrograph_path, "--gage_id", self.gage_id, "--output", output_path, "--base_dir", cfg.model_roots[0]],
+#             cwd=self.postproc_base_path
+#         )
+#         print(f" Final best hydrograph saved to {output_path}")
+
+#         # === Recompute validation metrics over the full period ===
+#         try:
+#             sim_df = pd.read_csv(output_path, parse_dates=['current_time']).set_index('current_time')['flow'].resample('1h').mean()
+#             obs_df = get_observed_q(self.observed_path)
+
+#             sim_val, obs_val = sim_df[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
+#             sim_val, obs_val = sim_val.align(obs_val, join='inner')
+
+#             if len(sim_val) > 0 and len(obs_val) > 0:
+#                 sim_val.iloc[-1] += 1e-8
+#                 obs_val.iloc[-1] += 1e-8
+
+#             val_metrics_final = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
+
+#             # Create final row after computing full-period validation metrics
+#             final_summary = {
+#                 "iteration": "FINAL",
+#                 "particle": "BEST",
+#                 **{name: val for name, val in zip(param_names, self.global_best_position)},
+#                 f"{self.metric_to_calibrate_on}_calibration": self.best_cal_metrics.get(self.metric_to_calibrate_on, np.nan),
+#                 f"{self.metric_to_calibrate_on}_validation": val_metrics_final.get(self.metric_to_calibrate_on, np.nan)
+#             }
+
+#             # Overwrite previous log and append only the final row
+#             pd.DataFrame(log_rows + [final_summary]).to_csv(log_path, index=False)
+
+#             # print the metric used for calibration
+#             metric_key = self.metric_to_calibrate_on
+#             metric_value = val_metrics_final.get(metric_key, None)
+#             if metric_value is not None:
+#                 print(f" Final validation {metric_key.upper()}: {metric_value:.4f}")
+#             else:
+#                 print(f" Final validation metric '{metric_key}' not found.")
+
+#         except Exception as e:
+#             print(f"Warning: Could not compute final validation metrics: {e}")
+
+
 #         return self.global_best_position, self.global_best_value, self.best_validation_metric, datetime.now() - start_time
 
 
@@ -1049,10 +1240,9 @@ if __name__ == "__main__":
 #         config_path,
 #         observed_path,
 #         postproc_base_path,
-#         metric_to_calibrate_on="event_kge"
+#         metric_to_calibrate_on="kge"
 #     )
 #     best_params, best_obj_value, best_val_metric, runtime = pso.optimize()
-#     print(f" Calibration done for {gage_id}: Validation metric = {best_val_metric:.3f}")
 
 
 # # === MAIN EXECUTION ===
@@ -1069,5 +1259,6 @@ if __name__ == "__main__":
 #     end_time = datetime.now()
 #     total_duration = end_time - start_time
 #     print(f"\n Total wall time: {total_duration}")
+
 
 

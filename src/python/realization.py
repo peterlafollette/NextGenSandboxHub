@@ -3,6 +3,8 @@
 # Contact : ahmad.jan.khattak@noaa.gov
 # Date    : September 28, 2023
 ############################################################################################
+###############################################################
+# edits by: Peter La Follette [plafollette@lynker.com | May 2025], mostly a reduction in I/O due to saving less BMI outputs (not all are needed for calibration)
 
 """
 The script generates realization files for a given model coupling option

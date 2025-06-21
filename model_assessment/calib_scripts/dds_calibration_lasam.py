@@ -1,4 +1,7 @@
-# Refactored DDS calibration script for LASAM with full feature parity to PSO
+###############################################################
+# Author      : Peter La Follette [plafollette@lynker.com | May 2025]
+# Calibrates lasam+pet+t-route or lasam+t-route+NOM, if NOM is in the model formulation then some of its parameters will be calibrated
+# currently tiled formulations are supported (up to 2 tiles), however each tile will be a different instance of lasam+pet+t-route or lasam+t-route+NOM rather than able to be based on cfe
 
 import os
 import subprocess
@@ -104,7 +107,12 @@ class DDS:
 
         for iteration in range(1, self.n_iterations + 1):
             print(f"\n--- DDS Iteration {iteration} for gage {self.gage_id} ---")
+            clear_terminal()
 
+            ### As I was attempting my first calibration runs with 10s of gages running in parallel and hundreds of iterations on MacOS, I had spotlight indexing on.
+            ### It is actually the case that you can run out of disk space if spotlight indexing is on and it includes outputs from nextgen, because nextgen model outputs amount to a huge amount of data written per day
+            ### To address this, all directories that will contain nextgen outputs at the divide scale, as well as the t-route outputs, will have a .metadata_never_index file created with them during the -conf step in NextGenSandboxHub.
+            ### This should make spotlight indexing skip these files and avoid the issue where the available disk space goes to 0, but just to be sure, this function stops the calibration execution in the event that disk space gets too low 
             if check_for_stop_signal_or_low_disk(project_root):
                 print("Terminating early due to STOP_NOW or low disk.")
                 break
@@ -170,37 +178,6 @@ class DDS:
             metric_to_calibrate_on=self.metric_to_calibrate_on
         )
 
-
-        # # Re-evaluate both calibration and validation metrics with best params
-        # _, _, cal_metrics, val_metrics = objective_function_tiled(
-        #     (self.best_position, 0, self.gage_id, self.observed_q_root),
-        #     metric_to_calibrate_on=self.metric_to_calibrate_on,
-        #     base_roots=self.base_roots,
-        #     include_nom=self.include_nom,
-        #     n_tiles=self.n_tiles,
-        #     weights=self.weights,
-        # )
-
-        # cal_val = cal_metrics.get(self.metric_to_calibrate_on, np.nan)
-        # # val_val = val_metrics.get(self.metric_to_calibrate_on, np.nan)
-        # val_val = final_val_metrics.get(self.metric_to_calibrate_on, np.nan)
-
-
-        # if isinstance(val_val, (int, float)) and not np.isnan(val_val) and val_val > -10.0:
-        #     final_val = val_val
-        # else:
-        #     # fallback: use val_val from earlier return
-        #     _, fallback_val, _, _ = objective_function_tiled(
-        #         (self.best_position, 0, self.gage_id, self.observed_q_root),
-        #         metric_to_calibrate_on=self.metric_to_calibrate_on,
-        #         base_roots=self.base_roots,
-        #         include_nom=self.include_nom,
-        #         n_tiles=self.n_tiles,
-        #         weights=self.weights
-        #     )
-        #     print(f"[WARNING] val_metrics empty or invalid. Using fallback val_val: {fallback_val}")
-        #     final_val = fallback_val
-
         final_val = final_val_metrics.get(self.metric_to_calibrate_on, np.nan)
         final_row = {
             "iteration": "final",
@@ -234,7 +211,7 @@ def calibrate_gage_dds(gage_id):
             example_path = os.path.join(config_dir, example_file)
 
             tile_init = extract_initial_params(example_path)
-            include_nom = os.path.isdir(os.path.join(root, f"out/{gage_id}/configs/nom"))
+            include_nom = os.path.isdir(os.path.join(root, f"out/{gage_id}/configs/noahowp"))
             include_nom_flags.append(include_nom)
 
             # Convert 'a' to log10
@@ -300,6 +277,7 @@ def calibrate_gage_dds(gage_id):
         include_nom = any(include_nom_flags)
 
         # === Run DDS optimization ===
+        print(f"Final param_names: {param_names}")
         dds = DDS(
             bounds=all_bounds,
             n_iterations=n_iterations,

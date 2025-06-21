@@ -1,7 +1,7 @@
 ###############################################################
 # Author      : Ahmad Jan Khattak [ahmad.jan.khattak@noaa.gov | September 10, 2024]
 # Contributor : Sifan A. Koriche [sakoriche@ua.edu | December 18, 2024]
-# minor edits from Peter La Follette [plafollette@lynker.com | May 2025]
+# edits from Peter La Follette [plafollette@lynker.com | May 2025]
 
 # If running on AWS EC2 instance, run setup_ec2.sh before bulding models to setup the EC2 instance
 
@@ -26,8 +26,8 @@ cd ${wkdir}
 #####################################################
 
 BUILD_NGEN=OFF
-BUILD_MODELS=ON
-BUILD_TROUTE=OFF
+BUILD_MODELS=OFF
+BUILD_TROUTE=ON
 
 ngen_dir=/Users/peterlafollette/CIROH_project/ngen
 
@@ -58,7 +58,9 @@ ngen_dir=/Users/peterlafollette/CIROH_project/ngen
 #     popd
 # }
 
-###update for M-series Apple CPU
+
+###update for M-series Apple CPU but hoping to not rely on Apple M series specific paths
+### remember to run git submodule update --init --recursive in ngen after cloning ngen
 build_ngen()
 {
     pushd $ngen_dir
@@ -66,10 +68,6 @@ build_ngen()
     rm -rf ${builddir}
 
     cmake -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="-I/opt/homebrew/include" \
-          -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" \
-          -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" \
-          -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib" \
           -DNGEN_WITH_BMI_FORTRAN=ON \
           -DNGEN_WITH_NETCDF=ON \
           -DNGEN_WITH_SQLITE=ON \
@@ -79,8 +77,6 @@ build_ngen()
           -DNGEN_QUIET=ON \
           -DNGEN_WITH_MPI=ON \
           -DNetCDF_ROOT=${NETCDF_ROOT}/lib \
-          -DUDUNITS2_INCLUDE_DIR=/opt/homebrew/include \
-          -DUDUNITS2_LIBRARY=/opt/homebrew/lib/libudunits2.dylib \
           -B ${builddir} \
           -S .
 
@@ -108,7 +104,7 @@ build_troute()
     popd
 }
 
-# #####using this version because there is a bug when trying to use t-route with hydrofabric version 2.2 -- there ends up being two "id" columns per subset geopacakge which t-route does not like.
+# #####there is a bug when trying to use t-route with hydrofabric version 2.2 -- there ends up being two "id" columns per subset geopacakge which t-route does not like.
 # #####this fixes that and is compatible with both v 2.1.1 and 2.2.
 # #####however, cloning directly from this repo seems to slow routing down. So my recommendation is to just use build_troute as above and then copy in the fix linked below if using hydrofabric v 2.2
 # #####see https://github.com/shorvath-noaa/t-route/blob/400fd8ce80be509f21e7b896e51cce655cb78950/src/troute-network/troute/HYFeaturesNetwork.py#L97-L117
@@ -147,8 +143,9 @@ build_models()
 	rm -rf extern/$model/${builddir}
 	if [ "$model" == "noah-owp-modular" ]; then
 	    git submodule update --remote extern/${model}/${model}
-	    cmake -B extern/${model}/${builddir} -S extern/${model} -DCMAKE_BUILD_TYPE=Release -DNGEN_IS_MAIN_PROJECT=ON -DCMAKE_C_FLAGS="-I/opt/homebrew/include" -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib" 
-	    make -C extern/${model}/${builddir}
+	    # cmake -B extern/${model}/${builddir} -S extern/${model} -DCMAKE_BUILD_TYPE=Release -DNGEN_IS_MAIN_PROJECT=ON -DCMAKE_C_FLAGS="-I/opt/homebrew/include" -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib" 
+        cmake -B extern/${model}/${builddir} -S extern/${model} -DCMAKE_BUILD_TYPE=Release -DNGEN_IS_MAIN_PROJECT=ON
+        make -C extern/${model}/${builddir}
 	fi
 	if [ "$model" == "cfe" ] || [ "$model" == "SoilFreezeThaw" ] || [ "$model" == "SoilMoistureProfiles" ]; then
 	    git submodule update --remote extern/${model}/${model}
@@ -164,7 +161,8 @@ build_models()
         fi
 	    # git clone https://github.com/NOAA-OWP/LGAR-C extern/${model}/${model}
         git clone https://github.com/peterlafollette/LGAR-C -b preferential_flow extern/${model}
-	    cmake -B extern/${model}/${builddir} -S extern/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-I/opt/homebrew/include" -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib"
+	    # cmake -B extern/${model}/${builddir} -S extern/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-I/opt/homebrew/include" -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib"
+        cmake -B extern/${model}/${builddir} -S extern/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release
 	    make -C extern/${model}/${builddir}
 	fi
 	if [ "$model" == "evapotranspiration" ]; then
