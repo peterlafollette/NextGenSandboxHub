@@ -58,11 +58,12 @@ To generate configuratioin and realization files, setup the `formulation` block 
  ```
     python <path_to_sandboxhub>/sandbox.py -conf
  ```
+ If you want to run a tiled formulation, you will have to run the -conf step for each tile, specifying the correct output [here](configs/sandbox_config.yaml) each time.
 
 ### <ins> Step 6. Run Calibration/Validation Simulations
-Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_config.yaml), and run the following command, note this depends on all of the above steps:
+Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_config.yaml), and also set up the config for each individual tile in the configs directory. Ensure that the output directory for each tile exists. Run the calibration script you are interested in, for example, from the NextGenSandboxHub directory:
  ```
-    python <path_to_sandboxhub>/sandbox.py -run
+    python model_assessment/calib_scripts/pso_calibration_lasam.py      
  ```
 
 #### Summary
@@ -72,17 +73,23 @@ Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_con
 4. Run Simulations: Using
   ```
     python <path_to_sandboxhub>/sandbox.py option
-    OPTIONS = [-subset -forc -conf -run]
+    OPTIONS = [-subset -forc -conf]
   ```
+And then for tiled calibration, one of:
+ ```
+    python model_assessment/calib_scripts/pso_calibration_lasam.py      
+    python model_assessment/calib_scripts/dds_calibration_lasam.py   
+    python model_assessment/calib_scripts/pso_calibration_cfe.py       
+    python model_assessment/calib_scripts/dds_calibration_cfe.py     
+ ```
+ This will create output .csv files in /logging that describe the calibration and validation performance of the chosen model formulation.
+
 - Option: `-subset` downloads geopackage(s) given a gage ID(s), extracts and locally compute TWI, GIUH, and Nash Cascade parameters; see `divide-attributes` in the gage_<basin_id>.gpkg file
 - Option: `-forc` downloads geopackage(s) given a gage ID(s)
 - Option: `-conf` generates configuration and realization files for the selected models/basins
-- Option: `-run` executes NextGen simulations with and without calibration
+- Option: `-run` should still work for the run mode of "control" but will not calibrate tiled formulations itself
 
 Note: These options can be run individually or combined together, for example, `path_to/sandbox.py -subset -conf -run`. The `-subset` is an expensive step, should be run once to get the desired basin geopacakge and associated model parameters.
-
-
-
 
 
 
