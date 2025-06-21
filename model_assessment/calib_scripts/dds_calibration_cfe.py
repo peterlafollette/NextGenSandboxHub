@@ -112,6 +112,7 @@ class DDS:
             ### It is actually the case that you can run out of disk space if spotlight indexing is on and it includes outputs from nextgen, because nextgen model outputs amount to a huge amount of data written per day
             ### To address this, all directories that will contain nextgen outputs at the divide scale, as well as the t-route outputs, will have a .metadata_never_index file created with them during the -conf step in NextGenSandboxHub.
             ### This should make spotlight indexing skip these files and avoid the issue where the available disk space goes to 0, but just to be sure, this function stops the calibration execution in the event that disk space gets too low 
+            ### if you have the ram to spare, writing the out directory on a ramdisk is a good idea anyway
             if check_for_stop_signal_or_low_disk():
                 break
 

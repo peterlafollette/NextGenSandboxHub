@@ -2,6 +2,7 @@ sandbox_dir  : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
 input_dir     : "/Users/peterlafollette/CIROH_project/in"  # user-specified
 output_dir    : "/Users/peterlafollette/CIROH_project/model1/out" # user-specified
 # output_dir    : "/Users/peterlafollette/CIROH_project/model2/out" # user-specified
+### if you have the ram to spare, making the output directory on a ramdisk is a good idea
 
 
 ########################################################################
