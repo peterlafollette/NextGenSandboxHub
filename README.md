@@ -61,7 +61,7 @@ To generate configuratioin and realization files, setup the `formulation` block 
  If you want to run a tiled formulation, you will have to run the -conf step for each tile, specifying the correct output [here](configs/sandbox_config.yaml) each time.
 
 ### <ins> Step 6. Run Calibration/Validation Simulations
-Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_config.yaml), and also set up the config for each individual tile in the configs directory. Ensure that the output directory for each tile exists. Run the calibration script you are interested in, for example, from the NextGenSandboxHub directory:
+Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_config.yaml), and also set up the config for each individual tile in the configs directory. Ensure that the output directory for each tile exists. Make sure path_config and time_config are set in model_assessment/configs . Run the calibration script you are interested in, for example, from the NextGenSandboxHub directory:
  ```
     python model_assessment/calib_scripts/pso_calibration_lasam.py      
  ```
