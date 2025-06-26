@@ -53,7 +53,13 @@ The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextG
 
 Note: The sandbox workflow assumes that [ngen](https://github.com/NOAA-OWP/ngen) and models including [t-route](https://github.com/NOAA-OWP/t-route) have been built in the Python virtual environment created in Step 1.
 
-### <ins>  Step 5. Generate Configuration and Realization Files
+ ### <ins>  Step 5a. Determine Nexus used in calibration
+If using a catchment that does not come in the default util/downstream_flowpath_summary.csv , then from the NextGenSandboxHub directory run 
+ ```
+    python model_assessment/util/get_penult_ids.py
+ ```
+
+### <ins>  Step 5b. Generate Configuration and Realization Files
 To generate configuratioin and realization files, setup the `formulation` block in the sandbox config file [here](configs/sandbox_config.yaml), and run the following command:
  ```
     python <path_to_sandboxhub>/sandbox.py -conf

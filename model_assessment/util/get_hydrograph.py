@@ -46,15 +46,26 @@ else:
 # === Step 1: Get the nexus feature ID for this gage ===
 def get_nexus_id(gage_id, summary_csv):
     df = pd.read_csv(summary_csv, dtype=str)
-    row = df[df["gage_id"] == gage_id]
-    if row.empty:
-        raise ValueError(f" Gage ID {gage_id} not found in summary file.")
     
-    nexus_str = row.iloc[0]["nexus_before_it"]
-    if not nexus_str.startswith("nex-"):
+    if gage_id not in df["gage_id"].values:
+        raise ValueError(f" Gage ID {gage_id} not found in summary file.")
+
+    row = df[df["gage_id"] == gage_id].iloc[0]
+
+    # Determine which column to use
+    if "most_downstream_nexus" in df.columns:
+        nexus_str = row["most_downstream_nexus"]
+    elif "nexus_before_it" in df.columns:
+        nexus_str = row["nexus_before_it"]
+    else:
+        raise ValueError(f" Neither 'most_downstream_nexus' nor 'nexus_before_it' found in summary file.")
+
+    # Validate format
+    if not isinstance(nexus_str, str) or not nexus_str.startswith("nex-"):
         raise ValueError(f" Invalid nexus ID format for gage {gage_id}: {nexus_str}")
     
     return int(nexus_str.replace("nex-", ""))
+
 
 # === Step 2: Extract flow time series from NetCDF for specific nexus ===
 def extract_nexus_flow(netcdf_path, nexus_id):

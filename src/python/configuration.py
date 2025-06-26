@@ -786,7 +786,12 @@ class ConfigurationGenerator:
         row = df[df["gage_id"] == gage_id].iloc[0]
 
         # Parse nexus ID
-        nexus_str = row["nexus_before_it"]
+        nexus_str = None
+        if "most_downstream_nexus" in row:
+            nexus_str = row["most_downstream_nexus"]
+        elif "nexus_before_it" in row:
+            nexus_str = row["nexus_before_it"]
+
         if not isinstance(nexus_str, str) or not nexus_str.startswith("nex-"):
             print(f" Warning: Invalid nexus string for gage {gage_id}: {nexus_str}. Skipping mask_output.yaml.")
             return
