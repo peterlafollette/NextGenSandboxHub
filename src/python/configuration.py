@@ -667,6 +667,19 @@ class ConfigurationGenerator:
 
     def write_troute_input_files(self):
 
+        # Clean old t-route outputs (*.nc, *.csv) from the troute output directory
+        troute_output_dir = os.path.join(self.output_dir, "troute")
+        if os.path.exists(troute_output_dir):
+            for file in os.listdir(troute_output_dir):
+                if file.endswith(".nc") or file.endswith(".csv"):
+                    full_path = os.path.join(troute_output_dir, file)
+                    try:
+                        os.remove(full_path)
+                        if self.verbosity >= 2:
+                            print(f"Deleted old t-route output: {full_path}")
+                    except Exception as e:
+                        print(f"Warning: Failed to delete {full_path}: {e}")
+
         troute_basefile = os.path.join(self.sandbox_dir, "configs/basefiles/config_troute.yaml")
         troute_dir = os.path.join(self.output_dir,"configs")
         gpkg_name = os.path.basename(self.gpkg_file).split(".")[0]
@@ -757,7 +770,13 @@ class ConfigurationGenerator:
         gage_id = os.path.splitext(basename)[0].replace("gage_", "")
 
         # Load downstream flowpath summary to get nexus and WBs
-        summary_path = "/Users/peterlafollette/NextGenSandboxHub/downstream_flowpath_summary.csv"
+        summary_path = Path(self.sandbox_dir) / "model_assessment" / "util" / "downstream_flowpath_summary.csv"
+        if not summary_path.exists():
+            raise FileNotFoundError(
+                f"Required file not found: {summary_path}\n"
+                f"You can generate it using the script: model_assessment/util/get_penult_ids.py within your NextGenSandboxHub directory."
+            )
+
         df = pd.read_csv(summary_path, dtype=str)
 
         if gage_id not in df["gage_id"].values:
