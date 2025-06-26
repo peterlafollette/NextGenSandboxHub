@@ -264,7 +264,7 @@ def calibrate_gage_dds(gage_id):
     dds.optimize()
 
 if __name__ == "__main__":
-    gages_file = os.path.join(cfg.project_root, "out/basins_passed_custom.csv")
+    gages_file = os.path.join(cfg.project_root, "basin_IDs/basin_IDs.csv")
     gage_list = pd.read_csv(gages_file, dtype={"gage_id": str})["gage_id"].tolist()
 
     ctx = multiprocessing.get_context("spawn")

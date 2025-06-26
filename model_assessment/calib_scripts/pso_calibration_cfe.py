@@ -664,7 +664,7 @@ def calibrate_gage(gage_id):
 if __name__ == "__main__":
     start_time = datetime.now()
 
-    gages_file = os.path.join(project_root, "out/basins_passed_custom.csv")
+    gages_file = os.path.join(project_root, "basin_IDs/basin_IDs.csv")
     gage_list = pd.read_csv(gages_file, dtype={"gage_id": str})["gage_id"].tolist()
 
     ctx = multiprocessing.get_context("spawn")
