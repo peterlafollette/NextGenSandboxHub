@@ -22,7 +22,7 @@ import yaml
 objective_metric = "kge"   # or "log_kge" or "event_kge", although these may no lojnger be supported 
 exclude_low     = False    # whether to filter out winners below threshold
 kge_threshold   = 0.3      # threshold if exclude_low=True
-plot_hydrographs = True    # Set to False to skip hydrograph plots
+plot_hydrographs = False    # Set to False to skip hydrograph plots
 annotate = True            #prints gage IDs on the map
 
 # === Paths ===
@@ -51,8 +51,12 @@ obs_dir = os.path.join(
 
 winner_csv_path    = "gage_model_winners.csv"
 
-lasam_log_dir = os.path.join(project_root, "model_assessment", "output_for_visualization", "lasam", "logging")
-cfe_log_dir   = os.path.join(project_root, "model_assessment", "output_for_visualization", "cfe", "logging")
+# lasam_log_dir = os.path.join(project_root, "model_assessment", "output_for_visualization", "lasam", "logging")
+# cfe_log_dir   = os.path.join(project_root, "model_assessment", "output_for_visualization", "cfe", "logging")
+
+lasam_log_dir = os.path.join("/Users/peterlafollette/Desktop/results/results_southwest_flux_cache", "logging")
+# lasam_log_dir = os.path.join("/Users/peterlafollette/Desktop/results/results_20250520_lasam_longer_cal", "logging")
+cfe_log_dir   = os.path.join("/Users/peterlafollette/Desktop/results/results_20250526_cfe_longer_cal_period_slightly_more_complete", "logging")
 
 # === Load NWM KGE lookup ===
 nwm_df = pd.read_csv(nwm_results_path, dtype={"gage_id":str})
@@ -117,14 +121,20 @@ for gid in gage_ids:
         if objective_metric=='kge'
         else nwm_kge_lookup.get(gid,{}).get('log_KGE')
     )
-    if not las or not cfe or nwm_val is None:
-        continue
-    scores = {'LGAR - PF': las['val'], 'CFE': cfe['val'], 'NWM retro': nwm_val}
+
+    if not las:
+        continue  # still skip if LASAM data is missing — it's your baseline
+
+    scores = {
+        'LGAR - PF': las['val'],
+        'CFE': cfe['val'] if cfe else -999,
+        'NWM retro': nwm_val if nwm_val is not None else -999
+    }
     winner = max(scores, key=scores.get)
     summary.append({
         'gage_id':   gid,
         'lasam_val': las['val'],
-        'cfe_val':   cfe['val'],
+        'cfe_val':   cfe['val'] if cfe else np.nan,
         'nwm_val':   nwm_val,
         'winner':    winner
     })
@@ -139,17 +149,67 @@ if exclude_low:
         'CFE': 'cfe_val',
         'NWM retro': 'nwm_val'
     }
-    mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] >= kge_threshold, axis=1)
+    mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] >= kge_threshold, axis=1) ###keeps high KGEs
+    # mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] <= kge_threshold, axis=1) ###keeps low KGEs
     summary_df = summary_df[mask]
 
 summary_df.to_csv(winner_csv_path, index=False, columns=['gage_id','winner'])
 counts = summary_df['winner'].value_counts().to_dict()
 
 
+
+
+#exclude gages that seemed to have invalid validation period 
+winner_to_col = {
+    'LGAR - PF': 'lasam_val',
+    'CFE': 'cfe_val',
+    'NWM retro': 'nwm_val'
+}
+mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] != -10.0, axis=1)
+summary_df = summary_df[mask]
+summary_df.to_csv(winner_csv_path, index=False, columns=['gage_id','winner'])
+counts = summary_df['winner'].value_counts().to_dict()
+print(" Filtered:", counts)
+
+
+
+
+
+# # Exclude gages with invalid validation metric (-10.0) and only keep gage IDs starting with "11"
+# winner_to_col = {
+#     'LGAR - PF': 'lasam_val',
+#     'CFE': 'cfe_val',
+#     'NWM retro': 'nwm_val'
+# }
+
+# mask = summary_df.apply(
+#     lambda r: (r[winner_to_col[r['winner']]] != -10.0) and str(r['gage_id']).startswith("11"),
+#     axis=1
+# )
+
+# summary_df = summary_df[mask]
+# summary_df.to_csv(winner_csv_path, index=False, columns=['gage_id', 'winner'])
+
+# counts = summary_df['winner'].value_counts().to_dict()
+# print(" Filtered:", counts)
+
+
+
+
+
+
 # summary_df = pd.DataFrame(summary).drop_duplicates(subset='gage_id')
 summary_df.to_csv(winner_csv_path, index=False, columns=['gage_id','winner'])
 counts = summary_df['winner'].value_counts().to_dict()
 print("Preference:", counts)
+
+lasam_kge = summary_df['lasam_val']
+print("\nLGAR - PF validation KGE stats:")
+print(f"  Median:   {lasam_kge.median():.3f}")
+print(f"  Mean:     {lasam_kge.mean():.3f}")
+print(f"  Min:      {lasam_kge.min():.3f}")
+print(f"  Max:      {lasam_kge.max():.3f}")
+print(f"  Count:    {lasam_kge.count()}")
 
 # === Color terminal output ===
 GREEN = "\033[92m"
@@ -174,24 +234,6 @@ RESET = "\033[0m"
 #     }.get(win, "")
 #     print(f"{gid:<12} | {las:<10.4f} | {cfe:<10.4f} | {nwm:<10.4f} | {color}{win}{RESET}")
 
-print("\n=== Validation Metric Comparison ===")
-print(f"{'Gage':<12} | {'LGAR - PF':<10} | {'CFE':<10} | {'NWM':<10} | Best")
-print("-" * 60)
-for _, row in summary_df.iterrows():
-    gid  = row['gage_id']
-    las  = row['lasam_val']
-    cfe  = row['cfe_val']
-    nwm  = row['nwm_val']
-    win  = row['winner']
-
-    color = {
-        'LGAR - PF': GREEN,
-        'CFE': BLUE,
-        'NWM retro': YELLOW
-    }.get(win, "")
-
-    nwm_str = f"{nwm:<10.4f}" if not np.isnan(nwm) else " " * 10
-    print(f"{gid:<12} | {las:<10.4f} | {cfe:<10.4f} | {nwm_str} | {color}{win}{RESET}")
 
 
 
@@ -202,12 +244,12 @@ if exclude_low:
         'CFE': 'cfe_val',
         'NWM retro': 'nwm_val'
     }
-    mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] >= kge_threshold, axis=1)
+    mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] >= kge_threshold, axis=1) ###keeps high KGEs
+    # mask = summary_df.apply(lambda r: r[winner_to_col[r['winner']]] <= kge_threshold, axis=1) ###keeps low KGEs
     summary_df = summary_df[mask]
     summary_df.to_csv(winner_csv_path, index=False, columns=['gage_id','winner'])
     counts = summary_df['winner'].value_counts().to_dict()
     print(" Filtered:", counts)
-
 
 # === Compute error metrics ===
 metrics = ['volume_error_percent','peak_flow_error_percent','time_to_peak_error_hours']
@@ -240,20 +282,32 @@ for idx, row in summary_df.iterrows():
                          parse_dates=['current_time']).set_index('current_time')['flow']
     # CFE
     cfe_pp = cfe_log_dir.replace('logging','postproc')
-    cfe_df = pd.read_csv(os.path.join(cfe_pp, f"{gid}_best.csv"),
-                         parse_dates=['current_time']).set_index('current_time')['flow']
+    cfe_fp = os.path.join(cfe_pp, f"{gid}_best.csv")
+    if os.path.exists(cfe_fp):
+        cfe_df = pd.read_csv(cfe_fp, parse_dates=['current_time']).set_index('current_time')['flow']
+    else:
+        cfe_df = None
+
     # NWM retro
     comid = gage_to_comid.get(gid)
     nwm_series = load_nwm_series(comid) if comid else None
 
-    # Compute metrics
+    # compute metrics
     results = {}
     results['LGAR - PF'] = compute_metrics(las_df, obs_df, start_time=start_time, end_time=end_time)
-    results['CFE']       = compute_metrics(cfe_df, obs_df, start_time=start_time, end_time=end_time)
+
+    # Safely compute CFE metrics
+    if cfe_df is not None:
+        results['CFE'] = compute_metrics(cfe_df, obs_df, start_time=start_time, end_time=end_time)
+    else:
+        results['CFE'] = {m: np.nan for m in metrics}
+
+    # Safely compute NWM metrics
     if nwm_series is not None:
         results['NWM retro'] = compute_metrics(nwm_series, obs_df, start_time=start_time, end_time=end_time)
     else:
         results['NWM retro'] = {m: np.nan for m in metrics}
+
 
     # Record per-model errors
     for lbl in ['LGAR - PF','CFE','NWM retro']:
@@ -542,6 +596,44 @@ plt.savefig("best_model_map.png", dpi=300)
 plt.show()
 
 print(" Saved updated figure with map, tables, and borders.")
+
+
+
+
+
+
+
+print("\n=== Validation Metric Comparison ===")
+print(f"{'Gage':<12} | {'LGAR - PF':<10} | {'CFE':<10} | {'NWM':<10} | {'VolumeErr%':<10} | {'PeakErr%':<9} | Best")
+print("-" * 90)
+
+for idx, row in enumerate(summary_df.itertuples()):
+    gid  = row.gage_id
+    las  = row.lasam_val
+    cfe  = row.cfe_val
+    nwm  = row.nwm_val
+    win  = row.winner
+
+    # Errors from model that won
+    vol_err = abs(error[win]['volume_error_percent'][idx])
+    pk_err  = abs(error[win]['peak_flow_error_percent'][idx])
+
+    color = {
+        'LGAR - PF': GREEN,
+        'CFE': BLUE,
+        'NWM retro': YELLOW
+    }.get(win, "")
+
+    nwm_str = f"{nwm:<10.4f}" if not np.isnan(nwm) else " " * 10
+    print(f"{gid:<12} | {las:<10.4f} | {cfe:<10.4f} | {nwm_str} | {vol_err:<10.1f} | {pk_err:<9.1f} | {color}{win}{RESET}")
+
+
+
+
+
+
+
+
 
 
 
