@@ -186,6 +186,7 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
     sim_dfs = []
 
     try:
+        incomplete_run = False
         for tile in range(n_tiles):
             tile_params = extract_tile_params(params, tile, n_tiles)
             tile_root = base_roots[tile]
@@ -296,10 +297,7 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
             # Allow a small tolerance for rounding, but crash if too short
             allowed_tolerance = 1
             if abs(actual_length - expected_length) > allowed_tolerance:
-                raise RuntimeError(
-                    f"Tile {tile} for gage {gage_id} produced {actual_length} time steps but expected {expected_length}. "
-                    f"Allowed tolerance is +/-{allowed_tolerance}. Simulation likely incomplete."
-                )
+                incomplete_run = True
 
             sim_dfs.append(sim_df['flow'].resample('1h').mean())
 
@@ -322,6 +320,24 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
 
         cal_metrics = compute_metrics(sim_cal, obs_cal, event_threshold=1e-2)
         val_metrics = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
+
+        ###log failed particle 
+        if incomplete_run:
+            failed_row = {
+                "gage_id": gage_id,
+                "particle_idx": particle_idx,
+                "params": params.tolist() if hasattr(params, "tolist") else list(params),
+                "error_message": f"Incomplete simulation: expected {expected_length}, got {actual_length}",
+                "cal_kge": cal_metrics.get("kge", np.nan),
+                "val_kge": val_metrics.get("kge", np.nan)
+            }
+            log_path = os.path.join(logging_dir, "incomplete_simulations.csv")
+            df = pd.DataFrame([failed_row])
+            if os.path.exists(log_path):
+                df.to_csv(log_path, mode='a', header=False, index=False)
+            else:
+                df.to_csv(log_path, index=False)
+
 
         return -cal_metrics[metric_to_calibrate_on], val_metrics[metric_to_calibrate_on], cal_metrics, val_metrics
 

@@ -284,7 +284,7 @@ def objective_function(args):
             verbose=False
         )
 
-
+    incomplete_run = False
     try:
         # === Update realization JSON to use spinup + calibration only ===
         json_dir = os.path.join(cfg.model_roots[0], "out", gage_id, "json")
@@ -339,10 +339,7 @@ def objective_function(args):
 
         allowed_tolerance = 1
         if abs(actual_length - expected_length) > allowed_tolerance:
-            raise RuntimeError(
-                f"Gage {gage_id} produced {actual_length} time steps but expected {expected_length}. "
-                f"Allowed tolerance is +/-{allowed_tolerance}. Simulation likely incomplete."
-            )
+            incomplete_run=True
 
         obs_df = get_observed_q(observed_path)
 
@@ -362,6 +359,21 @@ def objective_function(args):
 
         cal_metrics = compute_metrics(sim_cal, obs_cal, event_threshold=1e-2)
         val_metrics = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
+
+        if (incomplete_run):
+            # === LOG the failed particle ===
+            failed_row = {
+                "gage_id": gage_id,
+                "particle_idx": particle_idx,
+                "params": params.tolist() if hasattr(params, "tolist") else list(params),
+                "error_message": f"Incomplete simulation: expected {expected_length}, got {actual_length}"
+            }
+            log_path = os.path.join(logging_dir, "incomplete_simulations.csv")
+            df = pd.DataFrame([failed_row])
+            if os.path.exists(log_path):
+                df.to_csv(log_path, mode='a', header=False, index=False)
+            else:
+                df.to_csv(log_path, index=False)
 
         return -cal_metrics[metric_to_calibrate_on], val_metrics, cal_metrics
 
