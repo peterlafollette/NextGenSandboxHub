@@ -255,6 +255,18 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
 
             print(f"Running model for tile {tile} using config: {tile_sandbox_config}")
 
+            # === Delete old .nc routing files in troute dir ===
+            troute_dir = os.path.join(tile_root, "out", gage_id, "troute")
+            if os.path.isdir(troute_dir):
+                for fname in os.listdir(troute_dir):
+                    if fname.endswith(".nc"):
+                        file_path = os.path.join(troute_dir, fname)
+                        try:
+                            os.remove(file_path)
+                            print(f"[DEBUG] Deleted old routing file: {file_path}")
+                        except Exception as e:
+                            print(f"[WARN] Could not delete {file_path}: {e}")
+
             subprocess.call([
                 "python", sandbox_path,
                 "-i", tile_sandbox_config,
@@ -272,6 +284,23 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
 
             sim_path = os.path.join(postproc_dir, f"{gage_id}_particle_{particle_idx}.csv")
             sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
+
+            # === NEW: robust simulation length check ===
+            # Determine which period you are in: cal or validation (uses cal_end or val_end)
+            window_start = spinup_start
+            window_end = cal_end  # NOTE: cal_end is temporarily overridden to val_end during final validation
+
+            expected_length = int((window_end - window_start) / pd.Timedelta(hours=1)) + 1
+            actual_length = len(sim_df)
+
+            # Allow a small tolerance for rounding, but crash if too short
+            allowed_tolerance = 1
+            if abs(actual_length - expected_length) > allowed_tolerance:
+                raise RuntimeError(
+                    f"Tile {tile} for gage {gage_id} produced {actual_length} time steps but expected {expected_length}. "
+                    f"Allowed tolerance is +/-{allowed_tolerance}. Simulation likely incomplete."
+                )
+
             sim_dfs.append(sim_df['flow'].resample('1h').mean())
 
         avg_sim = sum(w * s for w, s in zip(weights, sim_dfs))
@@ -298,12 +327,28 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
 
     except Exception as e:
         print(f"Error in tiled objective function for {gage_id}: {e}")
+
+        # === LOG the failed particle ===
+        failed_row = {
+            "gage_id": gage_id,
+            "particle_idx": particle_idx,
+            "params": params.tolist() if hasattr(params, "tolist") else list(params),
+            "error_message": str(e)
+        }
+        log_path = os.path.join(logging_dir, "incomplete_simulations.csv")
+        df = pd.DataFrame([failed_row])
+        if os.path.exists(log_path):
+            df.to_csv(log_path, mode='a', header=False, index=False)
+        else:
+            df.to_csv(log_path, index=False)
+
         placeholder = {
             "kge": -10.0, "log_kge": -10.0, "volume_error_percent": -999.0,
             "peak_time_error_hours": -999.0, "peak_flow_error_percent": -999.0,
             "event_kge": -10.0, "event_hours": 0, "total_hours": 0
         }
         return 10.0, -10.0, placeholder, placeholder
+
 
 
 def run_validation_with_best(gage_id, logging_dir, observed_q_root, base_roots, best_params, n_tiles=2, include_nom=False, weights=None, metric_to_calibrate_on="kge"):

@@ -261,6 +261,18 @@ def objective_function(args):
 
     print(f"\nEvaluating particle {particle_idx} for gage {gage_id}")
 
+    # === Delete old .nc routing files in troute dir ===
+    troute_dir = os.path.join(cfg.model_roots[0], "out", gage_id, "troute")
+    if os.path.isdir(troute_dir):
+        for fname in os.listdir(troute_dir):
+            if fname.endswith(".nc"):
+                file_path = os.path.join(troute_dir, fname)
+                try:
+                    os.remove(file_path)
+                    print(f"[DEBUG] Deleted old routing file: {file_path}")
+                except Exception as e:
+                    print(f"[WARN] Could not delete {file_path}: {e}")
+
     regenerate_cfe_config(config_path, true_params)
 
     if include_nom:
@@ -318,6 +330,20 @@ def objective_function(args):
         )
 
         sim_df = pd.read_csv(output_path, parse_dates=['current_time']).set_index('current_time')['flow'].resample('1h').mean()
+        # Check output length (i.e. check for crashes if simulation length is unexpected)
+        window_start = pd.Timestamp(time_cfg["spinup_start"])
+        window_end = cal_end  # uses calibration period by default
+
+        expected_length = int((window_end - window_start) / pd.Timedelta(hours=1)) + 1
+        actual_length = len(sim_df)
+
+        allowed_tolerance = 1
+        if abs(actual_length - expected_length) > allowed_tolerance:
+            raise RuntimeError(
+                f"Gage {gage_id} produced {actual_length} time steps but expected {expected_length}. "
+                f"Allowed tolerance is +/-{allowed_tolerance}. Simulation likely incomplete."
+            )
+
         obs_df = get_observed_q(observed_path)
 
         sim_cal, obs_cal = sim_df[cal_start:cal_end].dropna(), obs_df[cal_start:cal_end].dropna()
@@ -340,8 +366,23 @@ def objective_function(args):
         return -cal_metrics[metric_to_calibrate_on], val_metrics, cal_metrics
 
     except Exception as e:
-        print(f"Error during evaluation: {e}")
+        print(f"Error during evaluation for {gage_id}: {e}")
         traceback.print_exc()
+
+        # === LOG the failed particle ===
+        failed_row = {
+            "gage_id": gage_id,
+            "particle_idx": particle_idx,
+            "params": params.tolist() if hasattr(params, "tolist") else list(params),
+            "error_message": str(e)
+        }
+        log_path = os.path.join(logging_dir, "incomplete_simulations.csv")
+        df = pd.DataFrame([failed_row])
+        if os.path.exists(log_path):
+            df.to_csv(log_path, mode='a', header=False, index=False)
+        else:
+            df.to_csv(log_path, index=False)
+
         placeholder_metrics = {
             "kge": -10.0,
             "log_kge": -10.0,
@@ -353,6 +394,7 @@ def objective_function(args):
             "total_hours": 0
         }
         return 10.0, placeholder_metrics, placeholder_metrics
+
 
 
 class Particle:
@@ -565,6 +607,19 @@ class PSO:
         # === Recompute validation metrics over the full period ===
         try:
             sim_df = pd.read_csv(output_path, parse_dates=['current_time']).set_index('current_time')['flow'].resample('1h').mean()
+            window_start = pd.Timestamp(time_cfg["spinup_start"])
+            window_end = pd.Timestamp(time_cfg["val_end"])
+
+            expected_length = int((window_end - window_start) / pd.Timedelta(hours=1)) + 1
+            actual_length = len(sim_df)
+
+            allowed_tolerance = 1
+            if abs(actual_length - expected_length) > allowed_tolerance:
+                raise RuntimeError(
+                    f"Final validation for gage {self.gage_id} produced {actual_length} time steps but expected {expected_length}. "
+                    f"Allowed tolerance is ±{allowed_tolerance}. Simulation likely incomplete."
+                )
+
             obs_df = get_observed_q(self.observed_path)
 
             sim_val, obs_val = sim_df[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
