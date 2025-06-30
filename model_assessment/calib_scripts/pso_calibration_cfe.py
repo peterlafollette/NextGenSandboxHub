@@ -57,10 +57,15 @@ def clear_terminal():
 def check_for_stop_signal_or_low_disk():
     stop_file = os.path.join(project_root, "STOP_NOW.txt")
     if os.path.exists(stop_file):
-        return True
+        print("Detected STOP_NOW.txt. ")
+        sys.exit(1)
     statvfs = os.statvfs(project_root)
     free_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024 ** 3)
-    return free_gb < 100
+    if (free_gb < 100.0):
+        print(f"Free disk space below threshold: {free_gb:.2f} GB, stopping.")
+        sys.exit(1)
+    # return free_gb < 100
+    return False
 
 
 # === PARAMETER SETUP ===

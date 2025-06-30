@@ -57,7 +57,8 @@ def check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
     stop_file = os.path.join(project_root, "STOP_NOW.txt")
     if os.path.exists(stop_file):
         print("Detected STOP_NOW.txt")
-        return True
+        sys.exit(1)
+        # return True
 
     # Check available disk space using statvfs
     stat = os.statvfs("/")
@@ -65,7 +66,8 @@ def check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
     free_gb = free_bytes / (1024 ** 3)
     if free_gb < threshold_gb:
         print(f"Free disk space below threshold: {free_gb:.2f} GB")
-        return True
+        sys.exit(1)
+        # return True
 
     return False
 
