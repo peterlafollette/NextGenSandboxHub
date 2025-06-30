@@ -52,7 +52,7 @@ def clear_terminal(): #this runs regularly because verbose output from nextgen c
 ### To address this, all directories that will contain nextgen outputs at the divide scale, as well as the t-route outputs, will have a .metadata_never_index file created with them during the -conf step in NextGenSandboxHub.
 ### This should make spotlight indexing skip these files and avoid the issue where the available disk space goes to 0, but just to be sure, this function stops the calibration execution in the event that disk space gets too low 
 ### if you have the ram to spare, writing the out directory on a ramdisk is a good idea anyway
-def check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
+def check_for_stop_signal_or_low_disk(project_root, threshold_gb=50):
     # Check for stop file
     stop_file = os.path.join(project_root, "STOP_NOW.txt")
     if os.path.exists(stop_file):
@@ -548,7 +548,7 @@ class PSO:
         w_start, w_end = 0.9, 0.4  # Inertia decay range
 
         for iteration in range(self.n_iterations):
-            if check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
+            if check_for_stop_signal_or_low_disk(project_root, threshold_gb=50):
                 print(f"Early termination of PSO for gage {self.gage_id} at iteration {iteration + 1}")
                 break
 
@@ -560,7 +560,7 @@ class PSO:
             results = []
             ###
             for i, p in enumerate(self.particles):
-                if check_for_stop_signal_or_low_disk(project_root, threshold_gb=100):
+                if check_for_stop_signal_or_low_disk(project_root, threshold_gb=50):
                     print(f"Early termination of PSO for gage {self.gage_id} during particle {i} at iteration {iteration + 1}")
                     return self.global_best_position, self.global_best_value, best_validation_metric, datetime.now() - start_time
 

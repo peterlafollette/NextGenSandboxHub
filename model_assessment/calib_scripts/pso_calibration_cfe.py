@@ -61,7 +61,7 @@ def check_for_stop_signal_or_low_disk():
         sys.exit(1)
     statvfs = os.statvfs(project_root)
     free_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024 ** 3)
-    if (free_gb < 100.0):
+    if (free_gb < 50.0):
         print(f"Free disk space below threshold: {free_gb:.2f} GB, stopping.")
         sys.exit(1)
     # return free_gb < 100
