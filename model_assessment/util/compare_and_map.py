@@ -24,7 +24,7 @@ exclude_low     = False    # whether to filter out winners below threshold
 kge_threshold   = 0.3      # threshold if exclude_low=True
 plot_hydrographs = False    # Set to False to skip hydrograph plots
 annotate = False            # prints gage IDs on the map
-coverage_thresh = 0.5      # discards sites that have streamflow coverage below a certain amount (in terms of frequency of achieving a magnitude specified in check_coverage.py)
+coverage_thresh = 0.5      # discards sites that have streamflow coverage below a certain amount (in terms of frequency of achieving a magnitude specified in check_coverage.py). This number is a percent so 5 will only include gages with coverage >5%
 
 # === Paths ===
 nwm_results_path = os.path.join(
