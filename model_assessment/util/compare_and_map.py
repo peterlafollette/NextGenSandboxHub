@@ -23,7 +23,8 @@ objective_metric = "kge"   # or "log_kge" or "event_kge", although these may no 
 exclude_low     = False    # whether to filter out winners below threshold
 kge_threshold   = 0.3      # threshold if exclude_low=True
 plot_hydrographs = False    # Set to False to skip hydrograph plots
-annotate = True            #prints gage IDs on the map
+annotate = False            # prints gage IDs on the map
+coverage_thresh = 0.5      # discards sites that have streamflow coverage below a certain amount (in terms of frequency of achieving a magnitude specified in check_coverage.py)
 
 # === Paths ===
 nwm_results_path = os.path.join(
@@ -54,9 +55,13 @@ winner_csv_path    = "gage_model_winners.csv"
 # lasam_log_dir = os.path.join(project_root, "model_assessment", "output_for_visualization", "lasam", "logging")
 # cfe_log_dir   = os.path.join(project_root, "model_assessment", "output_for_visualization", "cfe", "logging")
 
-lasam_log_dir = os.path.join("/Users/peterlafollette/Desktop/results/results_southwest_flux_cache", "logging")
+lasam_log_dir = os.path.join("/Users/peterlafollette/Desktop/results/results_southwest_NOM", "logging")
 # lasam_log_dir = os.path.join("/Users/peterlafollette/Desktop/results/results_20250520_lasam_longer_cal", "logging")
 cfe_log_dir   = os.path.join("/Users/peterlafollette/Desktop/results/results_20250526_cfe_longer_cal_period_slightly_more_complete", "logging")
+
+lasam_log_dir_nom = os.path.join("/Users/peterlafollette/Desktop/results/results_southwest_NOM", "logging")
+lasam_log_dir_flux = os.path.join("/Users/peterlafollette/Desktop/results/results_southwest_flux_cache", "logging")
+
 
 # === Load NWM KGE lookup ===
 nwm_df = pd.read_csv(nwm_results_path, dtype={"gage_id":str})
@@ -104,9 +109,58 @@ def extract_best_val_metric(log_dir, gage_id):
     }
 
 
+###just loads KGE from the lasam path
+# # === Gather gage IDs and determine winners ===
+# gage_ids = sorted(
+#     {f.replace('.csv','') for f in os.listdir(lasam_log_dir)
+#      if f.endswith('.csv') and not f.startswith('._')} |
+#     {f.replace('.csv','') for f in os.listdir(cfe_log_dir)
+#      if f.endswith('.csv') and not f.startswith('._')}
+# )
+
+# summary = []
+# for gid in gage_ids:
+#     las = extract_best_val_metric(lasam_log_dir, gid)
+#     cfe = extract_best_val_metric(cfe_log_dir,   gid)
+#     nwm_val = (
+#         nwm_kge_lookup.get(gid,{}).get('KGE')
+#         if objective_metric=='kge'
+#         else nwm_kge_lookup.get(gid,{}).get('log_KGE')
+#     )
+
+#     if not las:
+#         continue  # still skip if LASAM data is missing — it's your baseline
+
+#     scores = {
+#         'LGAR - PF': las['val'],
+#         'CFE': cfe['val'] if cfe else -999,
+#         'NWM retro': nwm_val if nwm_val is not None else -999
+#     }
+#     winner = max(scores, key=scores.get)
+#     summary.append({
+#         'gage_id':   gid,
+#         'lasam_val': las['val'],
+#         'cfe_val':   cfe['val'] if cfe else np.nan,
+#         'nwm_val':   nwm_val,
+#         'winner':    winner
+#     })
+
+
+# summary_df = pd.DataFrame(summary).drop_duplicates(subset='gage_id')
+
+
+
+
+
+
+
+
+###picks the best lasam sims from nom path and the other path 
 # === Gather gage IDs and determine winners ===
 gage_ids = sorted(
-    {f.replace('.csv','') for f in os.listdir(lasam_log_dir)
+    {f.replace('.csv','') for f in os.listdir(lasam_log_dir_nom)
+     if f.endswith('.csv') and not f.startswith('._')} |
+    {f.replace('.csv','') for f in os.listdir(lasam_log_dir_flux)
      if f.endswith('.csv') and not f.startswith('._')} |
     {f.replace('.csv','') for f in os.listdir(cfe_log_dir)
      if f.endswith('.csv') and not f.startswith('._')}
@@ -114,33 +168,162 @@ gage_ids = sorted(
 
 summary = []
 for gid in gage_ids:
-    las = extract_best_val_metric(lasam_log_dir, gid)
-    cfe = extract_best_val_metric(cfe_log_dir,   gid)
+    las_nom = extract_best_val_metric(lasam_log_dir_nom, gid)
+    las_flux = extract_best_val_metric(lasam_log_dir_flux, gid)
+    cfe = extract_best_val_metric(cfe_log_dir, gid)
     nwm_val = (
-        nwm_kge_lookup.get(gid,{}).get('KGE')
-        if objective_metric=='kge'
-        else nwm_kge_lookup.get(gid,{}).get('log_KGE')
+        nwm_kge_lookup.get(gid, {}).get('KGE')
+        if objective_metric == 'kge'
+        else nwm_kge_lookup.get(gid, {}).get('log_KGE')
     )
 
-    if not las:
-        continue  # still skip if LASAM data is missing — it's your baseline
+    # Skip if neither LASAM version has data
+    if not las_nom and not las_flux:
+        continue
+
+    # Pick the LASAM version with higher validation KGE
+    las_nom_val = las_nom['val'] if las_nom else -999
+    las_flux_val = las_flux['val'] if las_flux else -999
+
+    if las_nom_val >= las_flux_val:
+        lasam_val = las_nom_val
+        lasam_source = 'NOM'
+    else:
+        lasam_val = las_flux_val
+        lasam_source = 'Flux'
 
     scores = {
-        'LGAR - PF': las['val'],
+        'LGAR - PF': lasam_val,
         'CFE': cfe['val'] if cfe else -999,
         'NWM retro': nwm_val if nwm_val is not None else -999
     }
     winner = max(scores, key=scores.get)
+
     summary.append({
-        'gage_id':   gid,
-        'lasam_val': las['val'],
-        'cfe_val':   cfe['val'] if cfe else np.nan,
-        'nwm_val':   nwm_val,
-        'winner':    winner
+        'gage_id': gid,
+        'lasam_val': lasam_val,
+        'lasam_source': lasam_source,  # new: which LASAM version won
+        'cfe_val': cfe['val'] if cfe else np.nan,
+        'nwm_val': nwm_val,
+        'winner': winner
     })
 
 
 summary_df = pd.DataFrame(summary).drop_duplicates(subset='gage_id')
+
+
+summary_df.to_csv(
+    winner_csv_path, index=False, columns=['gage_id','winner','lasam_source']
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 1) Merge coverage once, right after summary_df is built
+coverage_fp = "/Users/peterlafollette/Desktop/fresh_clone_27062025/NextGenSandboxHub/model_assessment/util/streamflow_coverage_report.csv"
+coverage_df = pd.read_csv(coverage_fp, dtype={'gage_id': str})
+
+summary_df = summary_df.merge(
+    coverage_df[['gage_id', 'coverage_percent']],
+    on='gage_id',
+    how='left'
+)
+
+# 2) Drop sites with missing or <5% coverage
+summary_df = summary_df.dropna(subset=['coverage_percent'])
+summary_df = summary_df[summary_df['coverage_percent'] >= coverage_thresh].copy()
+
+print(f"After coverage filter: {len(summary_df)} sites")
+
+# 3) (Optional) Drop coverage column if you don't want it in your CSV
+# summary_df = summary_df.drop(columns=['coverage_percent'])
+
+# 4) Save winners
+summary_df.to_csv(winner_csv_path, index=False, columns=['gage_id', 'winner'])
+counts = summary_df['winner'].value_counts().to_dict()
+print("Filtered by coverage >=5%:", counts)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#####plots coverage vs KGE 
+
+# Use the already-filtered summary_df
+plot_df = summary_df.copy()
+
+# Optional: check if needed, but likely redundant now:
+# plot_df = plot_df.dropna(subset=['coverage_percent', 'lasam_val'])
+
+# === Prepare X and Y ===
+x = plot_df['coverage_percent']
+y = plot_df['lasam_val']
+
+# === Make scatter plot ===
+plt.figure(figsize=(8, 6))
+
+plt.scatter(x, y, s=50, edgecolor='black', facecolor='green', alpha=0.7)
+plt.axhline(0.0, linestyle='--', color='gray', linewidth=1)
+plt.xlabel('Streamflow Coverage (%)')
+plt.ylabel('Validation KGE (LGAR - PF)')
+plt.title('Validation KGE vs Streamflow Coverage')
+
+plt.ylim(-1.0, 1.0)
+
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.tight_layout()
+plt.savefig("kge_vs_streamflow_coverage.png", dpi=300)
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # === Optional filter of low winners ===
 if exclude_low:
@@ -192,6 +375,25 @@ print(" Filtered:", counts)
 
 # counts = summary_df['winner'].value_counts().to_dict()
 # print(" Filtered:", counts)
+
+
+
+
+
+
+
+
+
+
+counts = summary_df['lasam_source'].value_counts()
+print("\nCounts for lasam_source:")
+print(counts)
+
+
+
+
+
+
 
 
 

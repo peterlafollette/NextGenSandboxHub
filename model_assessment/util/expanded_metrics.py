@@ -7,7 +7,7 @@ import pandas as pd
 from hydroeval import kge
 import matplotlib.pyplot as plt
 
-def compute_metrics(sim, obs, event_threshold=1e-2, start_time=None, end_time=None, peak_search_window_hours=72):
+def compute_metrics(sim, obs, event_threshold=1e-2, start_time=None, end_time=None, peak_search_window_hours=10):
     """
     Compute multiple metrics between simulated and observed streamflow,
     optionally restricting to a specific time window.
