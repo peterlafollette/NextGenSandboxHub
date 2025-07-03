@@ -277,15 +277,25 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
                 "--gage_id", gage_id
             ], cwd=tile_root)
 
+            # === Delete old postproc file for this tile+particle ===
+            output_filename = f"{gage_id}_particle_{particle_idx}_tile_{tile}.csv"
+            output_path = os.path.join(postproc_dir, output_filename)
 
-            output_path = os.path.join(tile_root, "postproc", f"{gage_id}_particle_{particle_idx}.csv")
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                    print(f"[DEBUG] Deleted old postproc file: {output_path}")
+                except Exception as e:
+                    print(f"[WARN] Could not delete {output_path}: {e}")
+
+            # === Run get_hydrograph ===
             get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
             subprocess.call(
                 ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", tile_root],
                 cwd=os.path.join(tile_root, "postproc")
             )
 
-            sim_path = os.path.join(postproc_dir, f"{gage_id}_particle_{particle_idx}.csv")
+            sim_path = output_path
             sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
 
             # === NEW: robust simulation length check ===

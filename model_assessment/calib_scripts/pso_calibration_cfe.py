@@ -323,6 +323,15 @@ def objective_function_tiled(args):
             cwd=tile_root
         )
 
+        # === Delete old postproc file for this tile+particle ===
+        output_path = os.path.join(tile_root, "postproc", f"{gage_id}_particle_{particle_idx}.csv")
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+                print(f"[DEBUG] Deleted old postproc file: {output_path}")
+            except Exception as e:
+                print(f"[WARN] Could not delete {output_path}: {e}")
+
         # === Post-process hydrograph for this tile ===
         output_path = os.path.join(tile_root, "postproc", f"{gage_id}_particle_{particle_idx}.csv")
         get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
