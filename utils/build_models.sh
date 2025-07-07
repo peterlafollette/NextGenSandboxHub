@@ -160,7 +160,8 @@ build_models()
             rm -rf extern/${model}
         fi
 	    # git clone https://github.com/NOAA-OWP/LGAR-C extern/${model}/${model}
-        git clone https://github.com/peterlafollette/LGAR-C -b preferential_flow extern/${model}
+        # git clone https://github.com/peterlafollette/LGAR-C -b preferential_flow extern/${model}
+        git clone https://github.com/peterlafollette/LGAR-C -b simple_PF extern/${model}
 	    # cmake -B extern/${model}/${builddir} -S extern/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-I/opt/homebrew/include" -DCMAKE_CXX_FLAGS="-I/opt/homebrew/include" -DCMAKE_EXE_LINKER_FLAGS="-L/opt/homebrew/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/homebrew/lib"
         cmake -B extern/${model}/${builddir} -S extern/${model} -DNGEN=ON -DCMAKE_BUILD_TYPE=Release
 	    make -C extern/${model}/${builddir}
