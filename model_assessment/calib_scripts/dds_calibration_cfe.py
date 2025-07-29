@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from model_assessment.configs import path_config as cfg
 from model_assessment.util.metrics import compute_metrics
 from model_assessment.util.update_NOM import update_mptable
+import shutil 
 
 project_root = cfg.project_root
 sandbox_path = cfg.sandbox_path
@@ -120,7 +121,7 @@ class DDS:
         log_rows.append(row)
 
         for iteration in range(1, self.n_iterations + 1):
-            # clear_terminal()
+            clear_terminal()
             check_for_stop_signal_or_low_disk()
             print(f"\n--- DDS Iteration {iteration} for gage {self.gage_id} ---")
 
@@ -161,10 +162,10 @@ class DDS:
             }
             log_rows.append(row)
 
-        ###
         # === Final full-period run ===
-        print(f"\nRunning final full-period multi-tile validation for {self.gage_id}...")
+        print(f"\n[INFO] Running final weighted-routing validation for {self.gage_id}...")
 
+        # Handle weights
         if self.n_tiles == 2:
             tile_weight = self.best_position[-1]
             weights = [tile_weight, 1.0 - tile_weight]
@@ -173,81 +174,106 @@ class DDS:
             weights = [1.0 / self.n_tiles] * self.n_tiles
             param_vector = self.best_position
 
-        chunk = len(param_vector) // self.n_tiles
-        sim_dfs = []
-
+        # === STEP 1: Run hydrology for each tile ===
         for tile_idx, tile_root in enumerate(self.model_roots):
             tile_params = extract_tile_params(param_vector, tile_idx, self.n_tiles)
 
-            names = self.param_names[tile_idx * chunk : (tile_idx + 1) * chunk]
+            # Strip tile suffixes for config updates
+            names_for_tile = self.param_names[tile_idx * len(tile_params): (tile_idx + 1) * len(tile_params)]
+            base_names = [n.split("_tile")[0] for n in names_for_tile if n != "tile_weight"]
 
-            # Strip suffixes for configs
-            base_names = [n.split("_tile")[0] for n in names if n != "tile_weight"]
-
+            # Transform log-scale params and regenerate configs
             true_best = transform_params(tile_params, base_names)
-
             config_dir = os.path.join(tile_root, f"out/{self.gage_id}/configs/cfe")
             regenerate_cfe_config(config_dir, true_best, base_names)
 
-            # === NOM if needed (keep same)
+            # Update NOM params if present
             if self.include_nom and self.nom_file_paths[tile_idx]:
-                nom_vals = tile_params[-6:]  # adjust if needed
-                nom_param_dict = dict(zip(nom_param_names, nom_vals))
+                nom_vals = tile_params[-6:]
                 update_mptable(
                     original_file=self.nom_file_paths[tile_idx],
                     output_file=self.nom_file_paths[tile_idx],
-                    updated_params=nom_param_dict
+                    updated_params=dict(zip(nom_param_names, nom_vals))
                 )
 
+            # Update realization JSON for full spinup+validation
             json_dir = os.path.join(tile_root, "out", self.gage_id, "json")
             realization_file = [f for f in os.listdir(json_dir) if f.endswith(".json")][0]
             realization_path = os.path.join(json_dir, realization_file)
-            with open(realization_path) as f:
+            with open(realization_path, "r") as f:
                 realization = json.load(f)
             realization["time"]["start_time"] = time_cfg["spinup_start"]
             realization["time"]["end_time"] = time_cfg["val_end"]
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
 
-            troute_path = os.path.join(tile_root, "out", self.gage_id, "configs", "troute_config.yaml")
-            with open(troute_path, "r") as f:
-                troute_cfg = yaml.safe_load(f)
-            nts_full = int((val_end - spinup_start) / pd.Timedelta(seconds=300))
-            troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
-            troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts_full
-            with open(troute_path, "w") as f:
-                yaml.dump(troute_cfg, f)
-
-            troute_dir = os.path.join(tile_root, "out", self.gage_id, "troute")
-            if os.path.isdir(troute_dir):
-                for fname in os.listdir(troute_dir):
-                    if fname.endswith(".nc"):
-                        os.remove(os.path.join(troute_dir, fname))
-
+            # Run hydrology only
             tile_sandbox_config = os.path.join(cfg.project_root, "configs", f"sandbox_config_tile{tile_idx+1}.yaml")
             subprocess.call(
                 ["python", sandbox_path, "-i", tile_sandbox_config, "-run", "--gage_id", self.gage_id],
                 cwd=tile_root
             )
 
-            get_hydrograph_path = os.path.join(cfg.project_root, "model_assessment", "util", "get_hydrograph.py")
-            output_path = os.path.join(tile_root, "postproc", f"{self.gage_id}_best_tile_{tile_idx}.csv")
-            subprocess.call(
-                ["python", get_hydrograph_path, "--gage_id", self.gage_id, "--output", output_path, "--base_dir", tile_root],
-                cwd=os.path.join(tile_root, "postproc")
-            )
+        # === STEP 2: Weighted averaging of divide outputs ===
+        if self.n_tiles == 1:
+            weighted_div_dir = os.path.join(self.model_roots[0], "out", self.gage_id, "outputs", "div")
+        else:
+            weighted_div_dir = os.path.join(self.model_roots[0], "out", self.gage_id, "outputs", "div_weighted")
+            if os.path.exists(weighted_div_dir):
+                shutil.rmtree(weighted_div_dir)
+            os.makedirs(weighted_div_dir, exist_ok=True)
 
-            sim_df = pd.read_csv(output_path, parse_dates=['current_time']).set_index('current_time')['flow'].resample('1h').mean()
-            sim_dfs.append(sim_df)
+            div_dirs = [os.path.join(root, "out", self.gage_id, "outputs", "div") for root in self.model_roots]
+            files = [f for f in os.listdir(div_dirs[0]) if (f.startswith("cat-") or f.startswith("nex-")) and f.endswith(".csv")]
 
-        avg_sim = sum(w * s for w, s in zip(weights, sim_dfs))
-        final_df = avg_sim.reset_index().rename(columns={'index': 'current_time', 0: 'flow'})
-        final_output_path = os.path.join(cfg.model_roots[0], "postproc", f"{self.gage_id}_best.csv")
-        final_df.to_csv(final_output_path, index=False)
+            for fname in files:
+                dfs = []
+                for w, div_dir in zip(weights, div_dirs):
+                    fpath = os.path.join(div_dir, fname)
+                    df = pd.read_csv(fpath, header=None if fname.startswith("nex-") else 0)
+                    if fname.startswith("nex-"):
+                        df.columns = ["Time Step", "Time", "q_out"]
+                    dfs.append(df["q_out"] * w)
+                combined = sum(dfs)
+                out_df = df.copy()
+                out_df["q_out"] = combined
+                out_df["Time"] = pd.to_datetime(out_df["Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+                out_df.to_csv(os.path.join(weighted_div_dir, fname), index=False, header=not fname.startswith("nex-"))
 
-        obs_df = pd.read_csv(self.observed_path, parse_dates=['value_time']).set_index('value_time')['flow_m3_per_s']
-        sim_val, obs_val = avg_sim[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
-        sim_val, obs_val = sim_val.align(obs_val, join='inner')
+        # === STEP 3: Run routing once ===
+        troute_path = os.path.join(self.model_roots[0], "out", self.gage_id, "configs", "troute_config.yaml")
+        with open(troute_path, "r") as f:
+            troute_cfg = yaml.safe_load(f)
+        nts_full = int((val_end - spinup_start) / pd.Timedelta(seconds=300))
+        troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
+        troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts_full
+        troute_cfg["compute_parameters"]["forcing_parameters"]["qlat_input_folder"] = weighted_div_dir
+        yaml.safe_dump(troute_cfg, open(troute_path, "w"))
+
+        # Clear old routing outputs
+        troute_dir = os.path.join(self.model_roots[0], "out", self.gage_id, "troute")
+        if os.path.isdir(troute_dir):
+            for fname in os.listdir(troute_dir):
+                if fname.endswith(".nc"):
+                    os.remove(os.path.join(troute_dir, fname))
+
+        # Run routing
+        subprocess.call(["python3", "-m", "nwm_routing", "-f", "-V4", troute_path])
+
+        # === STEP 4: Extract final routed hydrograph ===
+        postproc_dir = os.path.join(self.model_roots[0], "postproc")
+        final_output_path = os.path.join(postproc_dir, f"{self.gage_id}_best.csv")
+        get_hydrograph_path = os.path.join(cfg.project_root, "model_assessment", "util", "get_hydrograph.py")
+        subprocess.call(
+            ["python", get_hydrograph_path, "--gage_id", self.gage_id, "--output", final_output_path, "--base_dir", self.model_roots[0]],
+            cwd=postproc_dir
+        )
+
+        # === STEP 5: Compute metrics and log ===
+        obs_df = pd.read_csv(self.observed_path, parse_dates=["value_time"]).set_index("value_time")["flow_m3_per_s"]
+        sim_df = pd.read_csv(final_output_path, parse_dates=["current_time"]).set_index("current_time")["flow"].resample("1h").mean()
+        sim_val, obs_val = sim_df[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
+        sim_val, obs_val = sim_val.align(obs_val, join="inner")
         val_metrics_final = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
 
         summary_row = {
@@ -259,8 +285,8 @@ class DDS:
         }
         log_rows.append(summary_row)
         pd.DataFrame(log_rows).to_csv(log_path, index=False)
+        print(f" Final {self.metric.upper()} = {val_metrics_final.get(self.metric, np.nan):.4f}")
 
-        print(f"\n Finished DDS for gage {self.gage_id} | Best obj = {-self.best_value:.4f} | Time: {datetime.now() - start_time}")
 
         return self.best_position, self.best_value, datetime.now() - start_time
 

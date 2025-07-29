@@ -26,7 +26,7 @@ random.seed(42)
 # === CONFIGURATION ===
 n_particles = 2 #15
 n_iterations = 2 #50 #so total number of model runs at a gage will be equal to n_particles*n_iterations
-max_cores_for_gages = 2 #11  # How many gages to calibrate in parallel. I recommend that this should be the number of cores your machine has or that number - 1.
+max_cores_for_gages = 10 #11  # How many gages to calibrate in parallel. I recommend that this should be the number of cores your machine has or that number - 1.
 
 
 from model_assessment.configs import path_config as cfg
@@ -177,25 +177,51 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
     if base_roots is None or len(base_roots) != n_tiles:
         raise ValueError("Must provide one project root per tile")
     if weights is None:
-        # weights = [1.0 / n_tiles] * n_tiles
-        weights = [0.7, 0.3]
+        weights = [0.7, 0.3] if n_tiles == 2 else [1.0 / n_tiles] * n_tiles
     assert len(weights) == n_tiles
 
-    # Static path for observed streamflow
-    # obs_path = os.path.join(observed_q_root, f"USGS_streamflow/successful_sites_resampled/{gage_id}.csv")
     obs_path = os.path.join(observed_q_root, "successful_sites_resampled", f"{gage_id}.csv")
     obs_series = get_observed_q(obs_path)
-    sim_dfs = []
+
+    # === CLEAR PREVIOUS RESULTS ===
+    for tile_root in cfg.model_roots:
+        outputs_dir = os.path.join(tile_root, "out", gage_id, "outputs")
+        div_dir = os.path.join(outputs_dir, "div")
+        div_weighted_dir = os.path.join(outputs_dir, "div_weighted")
+
+        for target_dir in [div_dir, div_weighted_dir]:
+            if os.path.isdir(target_dir):
+                for item in os.listdir(target_dir):
+                    if item.startswith("."):  # preserve hidden files like .metadata_never_index
+                        continue
+                    full_path = os.path.join(target_dir, item)
+                    if os.path.isfile(full_path) or os.path.islink(full_path):
+                        os.remove(full_path)
+                    elif os.path.isdir(full_path):
+                        shutil.rmtree(full_path)
+
+
+        # Clear routed NetCDF files
+        troute_dir = os.path.join(tile_root, "out", gage_id, "troute")
+        if os.path.isdir(troute_dir):
+            for f in os.listdir(troute_dir):
+                if f.endswith(".nc"):
+                    os.remove(os.path.join(troute_dir, f))
+
+        # Clear postprocessing particle files
+        postproc_dir = os.path.join(tile_root, "postproc")
+        if os.path.isdir(postproc_dir):
+            for f in os.listdir(postproc_dir):
+                if f.startswith(f"{gage_id}_particle_") and f.endswith(".csv"):
+                    os.remove(os.path.join(postproc_dir, f))
 
     try:
-        incomplete_run = False
+        # === STEP 1: Run hydrology per tile ===
         for tile in range(n_tiles):
             tile_params = extract_tile_params(params, tile, n_tiles)
             tile_root = base_roots[tile]
 
             config_dir = os.path.join(tile_root, f"out/{gage_id}/configs/lasam")
-            postproc_dir = os.path.join(tile_root, "postproc")
-
             config_files = sorted(f for f in os.listdir(config_dir) if f.startswith("lasam_config_cat"))
             for fname in config_files:
                 update_lasam_files_for_divide(os.path.join(config_dir, fname), tile_params, include_nom)
@@ -216,140 +242,125 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
                     verbose=False
                 )
 
-            env = os.environ.copy()
-            env["PARTICLE_ID"] = f"{particle_idx}_tile_{tile}"
-
+            # Update realization.json for hydrology window
             json_dir = os.path.join(tile_root, "out", gage_id, "json")
             realization_path = [f for f in os.listdir(json_dir) if f.endswith(".json")][0]
             realization_path = os.path.join(json_dir, realization_path)
 
             with open(realization_path, "r") as f:
                 realization_config = json.load(f)
-
-            # Set calibration period only
             realization_config["time"]["start_time"] = spinup_start.strftime("%Y-%m-%d %H:%M:%S")
-            realization_config["time"]["end_time"]   = cal_end.strftime("%Y-%m-%d %H:%M:%S")
-
+            realization_config["time"]["end_time"] = cal_end.strftime("%Y-%m-%d %H:%M:%S")
             with open(realization_path, "w") as f:
                 json.dump(realization_config, f, indent=4)
 
-            # Update nts in troute_config.yaml
-            troute_path = os.path.join(
-                tile_root,
-                "out",
-                gage_id,
-                "configs",
-                "troute_config.yaml"
-            )
-
-            with open(troute_path, "r") as f:
-                troute_cfg = yaml.safe_load(f)
-
-            nts = int((cal_end - spinup_start) / pd.Timedelta(seconds=300))
-            troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
-            troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts
-
-            with open(troute_path, "w") as f:
-                yaml.dump(troute_cfg, f)
-
-            # Determine tile-specific sandbox config path
-            tile_config_filename = f"sandbox_config_tile{tile + 1}.yaml"
-            tile_sandbox_config = os.path.join(cfg.project_root, "configs", tile_config_filename)
-
-            print(f"Running model for tile {tile} using config: {tile_sandbox_config}")
-
-            # === Delete old .nc routing files in troute dir ===
-            troute_dir = os.path.join(tile_root, "out", gage_id, "troute")
-            if os.path.isdir(troute_dir):
-                for fname in os.listdir(troute_dir):
-                    if fname.endswith(".nc"):
-                        file_path = os.path.join(troute_dir, fname)
-                        try:
-                            os.remove(file_path)
-                            print(f"[DEBUG] Deleted old routing file: {file_path}")
-                        except Exception as e:
-                            print(f"[WARN] Could not delete {file_path}: {e}")
-
+            # Run hydrology only (divide scale)
             subprocess.call([
                 "python", sandbox_path,
-                "-i", tile_sandbox_config,
+                "-i", os.path.join(cfg.project_root, "configs", f"sandbox_config_tile{tile+1}.yaml"),
                 "-run",
                 "--gage_id", gage_id
             ], cwd=tile_root)
 
-            # === Delete old postproc file for this tile+particle ===
-            output_filename = f"{gage_id}_particle_{particle_idx}_tile_{tile}.csv"
-            output_path = os.path.join(postproc_dir, output_filename)
 
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                    print(f"[DEBUG] Deleted old postproc file: {output_path}")
-                except Exception as e:
-                    print(f"[WARN] Could not delete {output_path}: {e}")
+        # === STEP 2: Weighted averaging of divide outputs ===
+        if n_tiles == 1:
+            # Skip weighting to save on I/O: use tile 0's existing divide outputs directly
+            weighted_div_dir = os.path.join(base_roots[0], "out", gage_id, "outputs", "div")
+        else:
+            # Perform weighted averaging for multiple tiles
+            weighted_div_dir = os.path.join(base_roots[0], "out", gage_id, "outputs", "div_weighted")
+            if os.path.exists(weighted_div_dir):
+                shutil.rmtree(weighted_div_dir)  # Explicitly clear old weighted outputs
+            os.makedirs(weighted_div_dir, exist_ok=True)
 
-            # === Run get_hydrograph ===
-            get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
-            subprocess.call(
-                ["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", tile_root],
-                cwd=os.path.join(tile_root, "postproc")
-            )
+            div_dirs = [os.path.join(root, "out", gage_id, "outputs", "div") for root in base_roots]
+            files = [f for f in os.listdir(div_dirs[0]) if (f.startswith("cat-") or f.startswith("nex-")) and f.endswith(".csv")]
 
-            sim_path = output_path
-            sim_df = pd.read_csv(sim_path, parse_dates=['current_time']).set_index('current_time')
+            for fname in files:
+                dfs = []
+                for tile_idx, div_dir in enumerate(div_dirs):
+                    fpath = os.path.join(div_dir, fname)
+                    if os.path.exists(fpath):
+                        if fname.startswith("nex-"):
+                            df = pd.read_csv(fpath, header=None)
+                            df.columns = ["Time Step", "Time", "q_out"]
+                        else:
+                            df = pd.read_csv(fpath)
+                        dfs.append(df["q_out"] * weights[tile_idx])
+                if dfs:
+                    combined = sum(dfs)
+                    out_df = df.copy()
+                    out_df["q_out"] = combined
+                    out_df["Time"] = pd.to_datetime(out_df["Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
 
-            # === NEW: robust simulation length check ===
-            # Determine which period you are in: cal or validation (uses cal_end or val_end)
-            window_start = spinup_start
-            window_end = cal_end  # NOTE: cal_end is temporarily overridden to val_end during final validation
+                    if fname.startswith("nex-"):
+                        out_df.to_csv(os.path.join(weighted_div_dir, fname), index=False, header=False)
+                    else:
+                        out_df.to_csv(os.path.join(weighted_div_dir, fname), index=False)
 
-            expected_length = int((window_end - window_start) / pd.Timedelta(hours=1)) + 1
-            actual_length = len(sim_df)
 
-            # Allow a small tolerance for rounding, but crash if too short
-            allowed_tolerance = 1
-            if abs(actual_length - expected_length) > allowed_tolerance:
-                incomplete_run = True
 
-            sim_dfs.append(sim_df['flow'].resample('1h').mean())
+        # === STEP 3: Update troute_config.yaml ===
+        troute_path = os.path.join(base_roots[0], "out", gage_id, "configs", "troute_config.yaml")
+        with open(troute_path, "r") as f:
+            troute_cfg = yaml.safe_load(f)
+        if n_tiles > 1:
+            troute_cfg["compute_parameters"]["forcing_parameters"]["qlat_input_folder"] = weighted_div_dir
+        nts = int((cal_end - spinup_start) / pd.Timedelta(seconds=300))
+        troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
+        troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts
+        with open(troute_path, "w") as f:
+            yaml.dump(troute_cfg, f)
 
-        avg_sim = sum(w * s for w, s in zip(weights, sim_dfs))
+        # === STEP 4: Run routing ===
+        subprocess.call(["python3", "-m", "nwm_routing", "-f", "-V4", troute_path])
 
+        # === STEP 5: Extract routed hydrograph ===
+        postproc_dir = os.path.join(base_roots[0], "postproc")
+        output_filename = f"{gage_id}_particle_{particle_idx}.csv"
+        output_path = os.path.join(postproc_dir, output_filename)
+        get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
+        subprocess.call(["python", get_hydrograph_path, "--gage_id", gage_id, "--output", output_path, "--base_dir", base_roots[0]])
+
+        sim_df = pd.read_csv(output_path, parse_dates=['current_time']).set_index('current_time')
+
+        # === STEP 6: Robust simulation length check ===
+        window_start = spinup_start
+        window_end = cal_end  # Will be val_end if in validation mode
+        expected_length = int((window_end - window_start) / pd.Timedelta(hours=1)) + 1
+        actual_length = len(sim_df)
+        allowed_tolerance = 1
+        incomplete_run = abs(actual_length - expected_length) > allowed_tolerance
+
+        if incomplete_run:
+            print(f"[WARN] Incomplete routed hydrograph for {gage_id}: expected {expected_length}, got {actual_length}")
+
+        # === STEP 7: Compute metrics ===
+        avg_sim = sim_df['flow'].resample('1h').mean()
         sim_cal, obs_cal = avg_sim[cal_start:cal_end].dropna(), obs_series[cal_start:cal_end].dropna()
         sim_val, obs_val = avg_sim[val_start:val_end].dropna(), obs_series[val_start:val_end].dropna()
-
         sim_cal, obs_cal = sim_cal.align(obs_cal, join='inner')
         sim_val, obs_val = sim_val.align(obs_val, join='inner')
 
-        # Add tiny epsilon to last values in each window. The idea is that if there is no streamflow in both observartions and simulations, that is good, but the KGE calculation will fail if both time series are 0s.
-        if len(sim_cal) > 0 and len(obs_cal) > 0:
-            sim_cal.iloc[-1] += 1e-8
-            obs_cal.iloc[-1] += 1e-8
-
-        if len(sim_val) > 0 and len(obs_val) > 0:
-            sim_val.iloc[-1] += 1e-8
-            obs_val.iloc[-1] += 1e-8
+        if len(sim_cal) > 0: sim_cal.iloc[-1] += 1e-8; obs_cal.iloc[-1] += 1e-8
+        if len(sim_val) > 0: sim_val.iloc[-1] += 1e-8; obs_val.iloc[-1] += 1e-8
 
         cal_metrics = compute_metrics(sim_cal, obs_cal, event_threshold=1e-2)
         val_metrics = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
 
-        ###log failed particle 
+        # Log incomplete run if necessary
         if incomplete_run:
             failed_row = {
                 "gage_id": gage_id,
                 "particle_idx": particle_idx,
                 "params": params.tolist() if hasattr(params, "tolist") else list(params),
-                "error_message": f"Incomplete simulation: expected {expected_length}, got {actual_length}",
+                "error_message": f"Incomplete routed hydrograph: expected {expected_length}, got {actual_length}",
                 "cal_kge": cal_metrics.get("kge", np.nan),
                 "val_kge": val_metrics.get("kge", np.nan)
             }
             log_path = os.path.join(logging_dir, "incomplete_simulations.csv")
-            df = pd.DataFrame([failed_row])
-            if os.path.exists(log_path):
-                df.to_csv(log_path, mode='a', header=False, index=False)
-            else:
-                df.to_csv(log_path, index=False)
-
+            pd.DataFrame([failed_row]).to_csv(log_path, mode='a', header=not os.path.exists(log_path), index=False)
 
         return -cal_metrics[metric_to_calibrate_on], val_metrics[metric_to_calibrate_on], cal_metrics, val_metrics
 
@@ -379,17 +390,17 @@ def objective_function_tiled(args, metric_to_calibrate_on="kge", base_roots=None
 
 
 
-def run_validation_with_best(gage_id, logging_dir, observed_q_root, base_roots, best_params, n_tiles=2, include_nom=False, weights=None, metric_to_calibrate_on="kge"):
-    best_particle_idx = f"best"  # marker for final run
-
-    # Temporarily override cal_end to val_end to span full period
+def run_validation_with_best(
+    gage_id, logging_dir, observed_q_root, base_roots, best_params,
+    n_tiles=2, include_nom=False, weights=None, metric_to_calibrate_on="kge"):
     global cal_end
     original_cal_end = cal_end
-    cal_end = val_end
+    cal_end = val_end  # Extend to validation window
 
-    print(f"\n Running final validation for gage {gage_id} using best particle from calibration...")
+    print(f"\nRunning final validation for gage {gage_id}...")
 
-    args = (best_params, best_particle_idx, gage_id, observed_q_root)
+    # Run objective function for validation
+    args = (best_params, "best", gage_id, observed_q_root)
     _, _, cal_metrics, val_metrics = objective_function_tiled(
         args,
         metric_to_calibrate_on=metric_to_calibrate_on,
@@ -399,20 +410,23 @@ def run_validation_with_best(gage_id, logging_dir, observed_q_root, base_roots, 
         weights=weights
     )
 
-    # Rename output CSV for clarity
+    # === Copy final routed hydrograph ===
     postproc_dir = os.path.join(base_roots[0], "postproc")
-    final_src = os.path.join(postproc_dir, f"{gage_id}_particle_{best_particle_idx}.csv")
+    final_src = os.path.join(postproc_dir, f"{gage_id}_particle_best.csv")
     final_dst = os.path.join(postproc_dir, f"{gage_id}_best.csv")
-    if os.path.exists(final_src):
-        shutil.copy(final_src, final_dst)
-        print(f" Final hydrograph saved to {final_dst}")
-    else:
-        print(f" Final hydrograph file not found: {final_src}")
 
-    # Restore original calibration end time
-    cal_end = original_cal_end
+    try:
+        if os.path.exists(final_src):
+            shutil.copy(final_src, final_dst)
+            print(f"Final routed hydrograph saved to: {final_dst}")
+        else:
+            print(f"[WARN] Final routed hydrograph not found at {final_src}")
+    except Exception as e:
+        print(f"[ERROR] Could not save final routed hydrograph: {e}")
 
+    cal_end = original_cal_end  # Restore calibration window
     return val_metrics
+
 
 
 # === UPDATE LASAM FILES ===
@@ -618,18 +632,13 @@ class PSO:
 
                     # Save best hydrograph live
                     try:
-                        sim_dfs_best = []
-                        for tile_save in range(self.n_tiles):
-                            tile_params_best = extract_tile_params(particle.position, tile_save, self.n_tiles)
-                            postproc_dir_best = os.path.join(self.base_roots[tile_save], "postproc")
-                            sim_path_best = os.path.join(postproc_dir_best, f"{self.gage_id}_particle_{idx}.csv")
-                            sim_df_best = pd.read_csv(sim_path_best, parse_dates=['current_time']).set_index('current_time')
-                            sim_dfs_best.append(sim_df_best['flow'].resample('1h').mean())
-
-                        avg_sim_best = sum(w * s for w, s in zip(self.weights, sim_dfs_best))
-                        best_path_live = os.path.join(self.base_roots[0], "postproc", f"{self.gage_id}_best.csv")
-                        pd.DataFrame({"current_time": avg_sim_best.index, "flow": avg_sim_best.values}).to_csv(best_path_live, index=False)
-                        print(f"Live best hydrograph written to {best_path_live}")
+                        best_path_live = os.path.join(self.base_roots[0], "postproc", f"{self.gage_id}_particle_{idx}.csv")
+                        if os.path.exists(best_path_live):
+                            live_best_dst = os.path.join(self.base_roots[0], "postproc", f"{self.gage_id}_best.csv")
+                            shutil.copy(best_path_live, live_best_dst)
+                            print(f"Live best routed hydrograph saved: {live_best_dst}")
+                        else:
+                            print(f"[WARN] Could not find routed hydrograph for best particle {idx}")
                     except Exception as e:
                         print(f"Could not update best hydrograph for {self.gage_id} (particle {idx}): {e}")
 

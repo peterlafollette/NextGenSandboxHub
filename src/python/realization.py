@@ -391,10 +391,11 @@ class RealizationGenerator:
                 "provider": "NetCDF"
             }
 
-        if "t-route" in self.formulation.lower():
-            root["routing"] = {
-                "t_route_config_file_with_path": os.path.join(self.config_dir, "troute_config.yaml")
-            }
+        # ### commented out because this fork handles routing differently, where routing is performed after (not as part of) the NextGen run and it is always assumed that routing is desired
+        # if "t-route" in self.formulation.lower():
+        #     root["routing"] = {
+        #         "t_route_config_file_with_path": os.path.join(self.config_dir, "troute_config.yaml")
+        #     }
 
         global_block = {
             "name": "bmi_multi",
