@@ -60,11 +60,12 @@ If using a catchment that does not come in the default util/downstream_flowpath_
  ```
 
 ### <ins>  Step 5b. Generate Configuration and Realization Files
-To generate configuratioin and realization files, setup the `formulation` block in the sandbox config file [here](configs/sandbox_config.yaml), and run the following command:
+To generate configuratioin and realization files, setup the `formulation` block in the sandbox config file [here](configs/sandbox_config.yaml), and run the following command from the NextGenSandboxHub directory:
  ```
-    python <path_to_sandboxhub>/sandbox.py -conf
+    python sandbox.py -conf -i configs/sandbox_config.yaml --concurrent-particles --num-particles <the number of concurrent particles you want>
  ```
  If you want to run a tiled formulation, you will have to run the -conf step for each tile, specifying the correct output [here](configs/sandbox_config.yaml) each time.
+ This branch has been refactored such that particles can be evaluated concurrently during PSO calibraiton, which better takes advantage of a large number of cores and reduces the total total time required for the calibration of each gage. The desired number of concurrent particles has to match the "max_cores_for_gages" variable in the desired PSO script. Note that DDS has not been tested on this branch because iterations in DDS should really not be done concurrently. 
 
 ### <ins> Step 6. Run Calibration/Validation Simulations
 Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_config.yaml), and also set up the config for each individual tile in the configs directory. Ensure that the output directory for each tile exists. Make sure path_config and time_config are set in model_assessment/configs . Run the calibration script you are interested in, for example, from the NextGenSandboxHub directory:
@@ -84,9 +85,9 @@ Setup the `ngen_cal` block in the sandbox config file [here](configs/sandbox_con
 And then for tiled calibration, one of:
  ```
     python model_assessment/calib_scripts/pso_calibration_lasam.py      
-    python model_assessment/calib_scripts/dds_calibration_lasam.py   
+    python model_assessment/calib_scripts/dds_calibration_lasam.py (untested in this branch)   
     python model_assessment/calib_scripts/pso_calibration_cfe.py       
-    python model_assessment/calib_scripts/dds_calibration_cfe.py     
+    python model_assessment/calib_scripts/dds_calibration_cfe.py (untested in this branch)   
  ```
  This will create output .csv files in /logging that describe the calibration and validation performance of the chosen model formulation.
 

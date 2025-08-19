@@ -19,6 +19,41 @@ import json
 from pathlib import Path
 from src.python import configuration
 
+# === Particle-aware helpers ===
+def _particle_mode():
+    """Return True if we're running a particle workspace (set by the PSO script)."""
+    return (
+        os.environ.get("NGEN_CONCURRENT_PARTICLES") == "1"
+        and os.environ.get("NGEN_PARTICLE_ID") is not None
+    )
+
+def _particle_workspace(base_output_dir: Path, gage_id: str) -> Path:
+    """
+    Resolve the working dir for this gage:
+      - standard: <output_dir>/<gage_id>
+      - particle: <output_dir>/<gage_id>/particles/p<id>
+    """
+    gdir = Path(base_output_dir) / gage_id
+    if _particle_mode():
+        pid = os.environ["NGEN_PARTICLE_ID"]
+        gdir = gdir / "particles" / f"p{pid}"
+    return gdir
+
+def _resolve_realization(json_dir: Path) -> Path:
+    """
+    Choose which realization to run:
+      - if NGEN_REALIZATION_PATH points to a file, use it
+      - else, first *.json in json_dir
+    """
+    forced = os.environ.get("NGEN_REALIZATION_PATH")
+    if forced and os.path.isfile(forced):
+        return Path(forced)
+    cands = sorted((json_dir).glob("*.json"))
+    if not cands:
+        raise FileNotFoundError(f"No realization JSON found in {json_dir}")
+    return cands[0]
+
+
 class Runner:
     def __init__(self, config_workflow, config_calib, gage_id=None): 
         self.os_name = platform.system()
@@ -108,34 +143,39 @@ class Runner:
 
         for id, ncats in zip(indata["gage_id"], indata['num_divides']):
             ncats = int(ncats)
-            o_dir = self.output_dir / id
+
+            # --- particle-aware working directory ---
+            work_dir = _particle_workspace(self.output_dir, id)  # <out>/<gage> or <out>/<gage>/particles/pX
             i_dir = Path(self.input_dir) / id
-            os.chdir(o_dir)
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+            os.chdir(work_dir)
             print("cwd: ", os.getcwd())
             print("input_dir: ", i_dir)
-            print("output_dir: ", o_dir)
+            print("work_dir: ", work_dir)
 
             gpkg_file = Path(glob.glob(str(i_dir / "data" / "*.gpkg"))[0])
-            gpkg_name = gpkg_file.stem
             np_per_basin_local = self.np_per_basin
             file_par = ""
             if np_per_basin_local > 1:
                 np_per_basin_local, file_par = self.generate_partition_basin_file(ncats, gpkg_file)
 
             print(f"Running basin {id} on cores {np_per_basin_local} ********", flush=True)
-            realization = glob.glob("json/realization_*.json")
-            assert len(realization) == 1
-            realization = realization[0]
 
-            run_cmd = f'{ngen_exe} {gpkg_file} all {gpkg_file} all {realization}'
+            # --- pick the realization from the PARTICLE json dir (or NGEN_REALIZATION_PATH) ---
+            realization_path = _resolve_realization(work_dir / "json")
+
+            # --- build/run command ---
+            run_cmd = f'{ngen_exe} {gpkg_file} all {gpkg_file} all "{realization_path}"'
             if np_per_basin_local > 1:
-                run_cmd = f'mpirun -np {np_per_basin_local} {ngen_exe} {gpkg_file} all {gpkg_file} all {realization} {file_par}'
+                run_cmd = f'mpirun -np {np_per_basin_local} {ngen_exe} {gpkg_file} all {gpkg_file} all "{realization_path}" {file_par}'
 
             if self.os_name == "Darwin":
                 run_cmd = f'PYTHONEXECUTABLE=$(which python) {run_cmd}'
 
             print(f"Run command: {run_cmd}", flush=True)
             result = subprocess.call(run_cmd, shell=True)
+
 
     def run_ngen_with_calibration(self, basin):
         id, ncats = basin
