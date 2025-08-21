@@ -867,10 +867,6 @@ class PSO:
                     # also mirror in the .log file with iteration context
                     log_incomplete(self.gage_id, idx, f"iter_{iteration+1}", err)
 
-                if particle.stagnation_counter >= stagnation_threshold:
-                    print(f"Resetting particle {idx} after {stagnation_threshold} stagnant iterations.")
-                    particle.reset(self.bounds)
-
                 param_dict = {name: val for name, val in zip(self.param_names, particle.position)}
                 row = {
                     "iteration": iteration + 1,
@@ -883,9 +879,28 @@ class PSO:
                 }
                 log_rows.append(row)
 
+            # --- Identify this iteration’s leader (by current_value; lower is better) ---
+            try:
+                current_objs = [p.current_value for p in self.particles]
+                best_idx_now = int(np.nanargmin(current_objs))  # objective is minimized (-KGE), so argmin is leader
+            except Exception:
+                best_idx_now = None  # no leader protection if undefined
+
+            # --- Stagnation resets (skip the leader) ---
+            for i, p in enumerate(self.particles):
+                if p.stagnation_counter >= stagnation_threshold and (best_idx_now is None or i != best_idx_now):
+                    print(f"Resetting particle {i} after {stagnation_threshold} stagnant iterations.")
+                    # optional audit row:
+                    log_rows.append({
+                        "iteration": iteration + 1,
+                        "particle": i,
+                        "status": "RESET",
+                        "reason": f"stagnation >= {stagnation_threshold}",
+                    })
+                    p.reset(self.bounds)
+
             # write/flush after each iteration so partial progress is saved
             pd.DataFrame(log_rows).to_csv(log_path, index=False)
-
 
             # Update swarm
             for p in self.particles:

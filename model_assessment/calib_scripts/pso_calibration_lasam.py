@@ -736,7 +736,7 @@ class Particle:
 class PSO:
     def __init__(self, n_particles, bounds, n_iterations, gage_id,
                  init_position, metric_to_calibrate_on="kge",
-                 include_nom_flags=None, param_names=None):
+                 include_nom_flags=None, param_names=None, stagnation_threshold=10):
         self.particles = [
             Particle(bounds, init_position=init_position if i == 0 else None)
             for i in range(n_particles)
@@ -817,6 +817,26 @@ class PSO:
                 }
                 log_rows.append(row)
 
+            # ---- Identify this iteration’s leader (by current_value) ----
+            try:
+                current_objs = [p.current_value for p in self.particles]
+                best_idx_now = int(np.nanargmin(current_objs))
+            except Exception:
+                best_idx_now = None  # fallback: no leader protection if undefined
+
+            # ---- Stagnation resets (skip the leader) ----
+            for i, p in enumerate(self.particles):
+                if p.stagnation_counter >= stagnation_threshold and (best_idx_now is None or i != best_idx_now):
+                    print(f"Resetting particle {i} after {stagnation_threshold} stagnant iterations.")
+                    # (optional) audit row:
+                    log_rows.append({
+                        "iteration": iteration + 1,
+                        "particle": i,
+                        "status": "RESET",
+                        "reason": f"stagnation >= {stagnation_threshold}",
+                    })
+                    p.reset(self.bounds)
+
             # Persist log after each iteration
             pd.DataFrame(log_rows).to_csv(log_path, index=False)
 
@@ -836,7 +856,7 @@ class PSO:
 
         best_pid = 0  # reuse pid=0 workspace for the final run
 
-        # 1) Hydrology per tile with full window (spinup→val_end)
+        # 1) Hydrology per tile with full window (spinup to val_end)
         for tile_idx, tile_root in enumerate(model_roots):
             tile_params = extract_tile_params(self.global_best_position, tile_idx, n_tiles)
             include_nom = self.include_nom_flags[tile_idx]
