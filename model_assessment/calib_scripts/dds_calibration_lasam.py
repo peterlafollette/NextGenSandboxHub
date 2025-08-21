@@ -44,9 +44,11 @@ n_tiles = len(model_roots)
 # === Helper ===
 def reflect_bounds(x, low, high):
     if x < low:
-        return low + (low - x)
+        xr = low + (low - x)          # reflect across low
+        return low if xr > high else xr
     elif x > high:
-        return high - (x - high)
+        xr = high - (x - high)        # reflect across high
+        return high if xr < low else xr
     else:
         return x
 
