@@ -1,14 +1,29 @@
+#!/usr/bin/env python3
 """
-Author: Peter La Follette [plafollette@lynker.com | Refactor: Aug 2025]
+Author: Peter La Follette [plafollette@lynker.com | Refactor: Jan 2026]
 Concurrent multi-tile PSO calibration for LASAM(+PET+T-Route), with optional NOM support.
 
+Behavior preserved from Aug 2025 script:
 - Runs all particles concurrently each iteration using a ThreadPool (safe, no child-proc nesting).
 - Uses per-particle workspaces scaffolded by `sandbox.py -conf --concurrent-particles`:
     out/<gage_id>/particles/p{pid}/
   with particle-local configs/json/div/troute/postproc to avoid collisions.
 - Retargets realization paths into particle workspaces and updates LASAM/PET/NOM config paths.
-- Weighted tiling: optional `tile_weight` parameter (for 2 tiles); pre-routing weighted qlat in `div_weighted`.
-- Final full-period run (spinup→val_end) in BEST particle workspace writes `{gage}_best.csv`.
+- Weighted tiling: optional 'tile_weight' parameter (for 2 tiles); pre-routing weighted qlat in 'div_weighted'.
+- Final full-period run (spinup->val_end) in BEST workspace writes '{gage}_best.csv'.
+- STOP_NOW + low-disk abort.
+- Incomplete-run logging to {gage}_errors.log and {gage}_incomplete.csv.
+- Per-iteration CSV logging with parameters, calibration/validation metric, and errors.
+- Stagnation resets (skip iteration leader).
+
+Main change:
+- The optimizer parameter vector is built from a user-editable CALIBRATION_REQUEST
+  that can target specific layers and/or scalar/NOM parameters.
+
+Default behavior restored:
+- If NOM exists in a tile workspace and DEFAULT_INCLUDE_NOM_IF_PRESENT=True, the 6 NOM params
+  are automatically appended (mirrors original script's "NOM-on => +6 params" default).
+- Layer params do not auto-expand; the user controls which layers to include.
 """
 
 import os
@@ -18,11 +33,12 @@ import yaml
 import math
 import shutil
 import random
-import traceback
 import subprocess
 from pathlib import Path
+from dataclasses import dataclass
 from datetime import datetime
 from multiprocessing.pool import ThreadPool
+from typing import Callable, Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -37,44 +53,120 @@ from model_assessment.util.metrics import compute_metrics
 from model_assessment.util.update_NOM import update_mptable
 from model_assessment.configs import path_config as cfg
 
-# === CONFIGURATION ===
-n_particles = 2                   # particles per gage (adjust)
-n_iterations = 2                 # iterations (adjust)
-max_cores_for_gages = 5           # process multiple gages in parallel (outer Pool)
+# =========================
+# === CONFIGURATION =======
+# =========================
+
+n_particles = 2                 # particles per gage (adjust)
+n_iterations = 2               # iterations (adjust)
+max_cores_for_gages = 5        # parallelize across gages (outer Pool)
 metric_to_calibrate_on = "kge"
 
-# run ALL particles concurrently per iteration (inner pool size). None => n_particles
+# Run ALL particles concurrently per iteration (inner pool size). None => n_particles
 max_particle_procs = None
+
+# Optional learned weight for 2 tiles
+LEARN_TILE_WEIGHT_IF_2TILES = True
 
 with open("model_assessment/configs/time_config.yaml", "r") as f:
     time_cfg = yaml.safe_load(f)
 
-spinup_start = pd.Timestamp(time_cfg["spinup_start"])  # pd.Timestamp for math
-cal_start    = pd.Timestamp(time_cfg["cal_start"])
-cal_end      = pd.Timestamp(time_cfg["cal_end"])
-val_start    = pd.Timestamp(time_cfg["val_start"])
-val_end      = pd.Timestamp(time_cfg["val_end"])
+spinup_start = pd.Timestamp(time_cfg["spinup_start"])
+cal_start = pd.Timestamp(time_cfg["cal_start"])
+cal_end = pd.Timestamp(time_cfg["cal_end"])
+val_start = pd.Timestamp(time_cfg["val_start"])
+val_end = pd.Timestamp(time_cfg["val_end"])
 
-project_root     = cfg.project_root
-sandbox_path     = cfg.sandbox_path
-logging_dir      = cfg.logging_dir
-observed_q_root  = cfg.observed_q_root
-model_roots      = cfg.model_roots
+project_root = cfg.project_root
+sandbox_path = cfg.sandbox_path
+logging_dir = cfg.logging_dir
+observed_q_root = cfg.observed_q_root
+model_roots = cfg.model_roots
 
 os.makedirs(logging_dir, exist_ok=True)
 
-# === LASAM+NOM parameter structure ===
-# Soil layers are inferred per tile from config `layer_soil_type=`.
-# For each layer: (log_alpha, n, log_Ks)
-# Then LASAM scalars: (log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1)
-# Optional NOM (per tile): [MFSNO, RSURF_SNOW, HVT, CWPVT, VCMX25, MP]
+# =========================
+# === NOM SETUP ===========
+# =========================
 
 nom_param_names = ["MFSNO", "RSURF_SNOW", "HVT", "CWPVT", "VCMX25", "MP"]
 nom_param_bounds = [
-    (0.625, 5.0), (0.1, 100.0), (0.0, 20.0), (0.18, 5.0), (0.0, 80.0), (3.6, 12.6)
+    (0.625, 5.0),
+    (0.1, 100.0),
+    (0.0, 20.0),
+    (0.18, 5.0),
+    (0.0, 80.0),
+    (3.6, 12.6),
 ]
 
-# === Helpers ===
+# =========================
+# === PARAMETER SELECTION ==
+# =========================
+# User-editable. Controls optimizer search space.
+#
+# Default request reproduces the original "12 LASAM-only params for 2-layer case" behavior:
+# - soil: log_alpha, n, log_Ks for layers 1 and 2 (6)
+# - scalars: log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 (6)
+#
+# If NOM exists and DEFAULT_INCLUDE_NOM_IF_PRESENT=True, NOM params are auto-appended (6),
+# restoring original behavior for NOM-on sites (=> 18 params for 2-layer case).
+#
+# Per your note: the user specifies layers explicitly; we do not auto-expand by detected n_layers.
+
+CALIBRATION_REQUEST = [
+    # {"kind": "soil", "param": "log_alpha", "layers": [1, 2]},
+    {"kind": "soil", "param": "log_alpha", "layers": [1]},
+    # {"kind": "soil", "param": "n", "layers": [1, 2]},
+    {"kind": "soil", "param": "log_Ks", "layers": [1, 2]},
+
+    {"kind": "lasam", "param": "log10_a"},
+    {"kind": "lasam", "param": "b"},
+    {"kind": "lasam", "param": "frac_to_GW"},
+    # {"kind": "lasam", "param": "field_capacity_psi"},
+    {"kind": "lasam", "param": "spf_factor"},
+    # {"kind": "lasam", "param": "theta_e_1"},
+    {"kind": "lasam", "param": "layer_thickness", "layers": [1, 2]},
+]
+
+# If True and NOM exists in a tile workspace, NOM parameters are included by default
+# (restores original script behavior: NOM-off => 12, NOM-on => 18 for the common 2-layer case)
+DEFAULT_INCLUDE_NOM_IF_PRESENT = True
+
+# Default NOM list mirrors the original script's always-calibrate NOM behavior when NOM exists
+DEFAULT_NOM_REQUEST = [
+    {"kind": "nom", "param": "MFSNO"},
+    {"kind": "nom", "param": "RSURF_SNOW"},
+    {"kind": "nom", "param": "HVT"},
+    {"kind": "nom", "param": "CWPVT"},
+    {"kind": "nom", "param": "VCMX25"},
+    {"kind": "nom", "param": "MP"},
+]
+
+# Bounds registry (extend freely as you add more knobs later)
+BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
+    "soil": {
+        "log_alpha": (-4.0, 0.0),
+        "n": (1.02, 3.0),
+        "log_Ks": (-4.0, 2.0),
+        # Optional future:
+        # "theta_e": (0.3, 0.6),
+    },
+    "lasam": {
+        "log10_a": (-8.0, -1.0),
+        "b": (0.01, 5.0),
+        "frac_to_GW": (1e-4, 1.0 - 1e-4),
+        "field_capacity_psi": (10.0, 500.0),
+        "spf_factor": (0.1, 1.0),
+        "theta_e_1": (0.3, 0.6),
+        "layer_thickness": (1.0, 1000.0),
+    },
+    "nom": dict(zip(nom_param_names, nom_param_bounds)),
+}
+
+# =========================
+# === HELPERS ============
+# =========================
+
 def check_for_stop_signal_or_low_disk(threshold_gb: float = 10):
     stop_file = os.path.join(project_root, "STOP_NOW.txt")
     if os.path.exists(stop_file):
@@ -119,14 +211,12 @@ def log_incomplete(
     try:
         os.makedirs(logging_dir, exist_ok=True)
 
-        # Append to human-readable text log (kept as you had)
         with open(os.path.join(logging_dir, f"{gage_id}_errors.log"), "a") as f:
             f.write(
                 f"{datetime.now().isoformat()} | iter={iteration} | pid={particle_idx} "
                 f"| stage={stage} | {err_msg}\n"
             )
 
-        # Append to CSV with parameter set
         csv_path = os.path.join(logging_dir, f"{gage_id}_incomplete.csv")
         row = {
             "timestamp": datetime.now().isoformat(),
@@ -147,12 +237,10 @@ def log_incomplete(
 
         if os.path.isfile(csv_path):
             prev = pd.read_csv(csv_path)
-            # union columns
             for col in row.keys():
                 if col not in prev.columns:
                     prev[col] = np.nan
             new = pd.DataFrame([row])
-            # ensure same order as existing
             for col in prev.columns:
                 if col not in new.columns:
                     new[col] = np.nan
@@ -160,11 +248,12 @@ def log_incomplete(
         else:
             pd.DataFrame([row]).to_csv(csv_path, index=False)
     except Exception:
-        # Never fail the main run because logging hiccuped
         pass
 
+# =========================
+# === Realization retargeting (LASAM+PET+optional NOM)
+# =========================
 
-# --- Realization retargeting (LASAM+PET+optional NOM) ---
 def update_nom_namelist_paramdir(namelist_path: str, new_param_dir: str):
     if not os.path.isfile(namelist_path):
         return
@@ -186,20 +275,17 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
     with open(realization_path, "r") as f:
         rz = json.load(f)
 
-    # Create only the directories we always need
     configs_root = os.path.join(work_root, "configs")
     os.makedirs(configs_root, exist_ok=True)
     div_dir = os.path.join(work_root, "outputs", "div")
     os.makedirs(div_dir, exist_ok=True)
 
-    # Lazily create per-model config dirs only when we actually see that model
     cfg_lasam_dir = os.path.join(configs_root, "lasam")
-    cfg_pet_dir   = os.path.join(configs_root, "pet")
-    cfg_nom_dir   = os.path.join(configs_root, "noahowp")
+    cfg_pet_dir = os.path.join(configs_root, "pet")
+    cfg_nom_dir = os.path.join(configs_root, "noahowp")
     cfg_nom_param = os.path.join(cfg_nom_dir, "parameters")
 
     forms = rz.get("global", {}).get("formulations", [])
-
     for form in forms:
         params = form.get("params", {})
         modules = params.get("modules", [])
@@ -211,32 +297,26 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
 
             model_type = (p.get("model_type_name") or "").upper()
             fname = Path(init_cfg).name
-
-            # Resolve source path (allow relative to base out dir)
             src = init_cfg if os.path.isabs(init_cfg) else os.path.join(base_out_dir, init_cfg)
 
-            # LASAM / LGAR
             if any(alias in model_type for alias in ("LASAM", "LGAR")) or "/configs/lasam/" in init_cfg:
                 os.makedirs(cfg_lasam_dir, exist_ok=True)
                 if os.path.isfile(src):
                     shutil.copy2(src, os.path.join(cfg_lasam_dir, fname))
                 p["init_config"] = os.path.abspath(os.path.join(cfg_lasam_dir, fname))
 
-            # PET
             elif "PET" in model_type or "/configs/pet/" in init_cfg:
                 os.makedirs(cfg_pet_dir, exist_ok=True)
                 if os.path.isfile(src):
                     shutil.copy2(src, os.path.join(cfg_pet_dir, fname))
                 p["init_config"] = os.path.abspath(os.path.join(cfg_pet_dir, fname))
 
-            # NOM (Noah-MP) — only create noahowp/ if needed
             elif any(k in model_type for k in ("NOM", "NOAH")) or "/noahowp/" in init_cfg:
                 os.makedirs(cfg_nom_param, exist_ok=True)
                 cfg_nom_namelist = os.path.join(cfg_nom_dir, fname)
                 if os.path.isfile(src):
                     shutil.copy2(src, cfg_nom_namelist)
 
-                # Link/copy parameter tables from the shared (gage-level) location
                 shared_nom_paramdir = os.path.join(base_out_dir, "configs", "noahowp", "parameters")
                 for tbl in ("GENPARM.TBL", "SOILPARM.TBL"):
                     src_tbl = os.path.join(shared_nom_paramdir, tbl)
@@ -247,7 +327,6 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
                         except OSError:
                             shutil.copy2(src_tbl, dst_tbl)
 
-                # Seed MPTABLE if present
                 mpt_src = os.path.join(shared_nom_paramdir, "MPTABLE.TBL")
                 mpt_dst = os.path.join(cfg_nom_param, "MPTABLE.TBL")
                 if os.path.isfile(mpt_src) and not os.path.isfile(mpt_dst):
@@ -256,7 +335,6 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
                 update_nom_namelist_paramdir(cfg_nom_namelist, cfg_nom_param)
                 p["init_config"] = os.path.abspath(cfg_nom_namelist)
 
-    # Redirect output_root into the particle workspace
     rz["output_root"] = div_dir
     if "global" in rz:
         rz["global"]["output_root"] = div_dir
@@ -266,175 +344,456 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
 
     return div_dir
 
+# =========================
+# === Observations / metrics
+# =========================
 
-# --- LASAM param extraction & writing ---
 def get_observed_q(observed_path: str) -> pd.Series:
     df = pd.read_csv(observed_path, parse_dates=["value_time"]).set_index("value_time")
     return df["flow_m3_per_s"]
 
-def extract_initial_params(example_config_path: str):
-    with open(example_config_path) as f:
+# =========================
+# === PARAM SPEC SYSTEM ===
+# =========================
+
+@dataclass
+class ParamSpec:
+    name: str
+    bounds: Tuple[float, float]
+    init_value: float
+    apply: Callable[["TileContext", float], None]
+
+class TileContext:
+    """Workspace context for a single tile workspace at (tile_root, gage_id, particle_id)."""
+
+    def __init__(self, tile_root: str, gage_id: str, pid: int, work_root: str):
+        self.tile_root = tile_root
+        self.gage_id = gage_id
+        self.pid = pid
+        self.work_root = work_root
+
+        self.lasam_cfg_dir = os.path.join(work_root, "configs", "lasam")
+        self.lasam_cfg_files = sorted(
+            f for f in os.listdir(self.lasam_cfg_dir) if f.startswith("lasam_config_cat")
+        )
+        if not self.lasam_cfg_files:
+            raise FileNotFoundError(f"No LASAM configs found in {self.lasam_cfg_dir}")
+
+        first_cfg = os.path.join(self.lasam_cfg_dir, self.lasam_cfg_files[0])
+        with open(first_cfg, "r") as f:
+            lines = f.readlines()
+
+        soil_types_line = next(line for line in lines if line.strip().startswith("layer_soil_type="))
+        self.soil_types: List[int] = list(map(int, soil_types_line.strip().split("=", 1)[1].split(",")))
+        self.n_layers = len(self.soil_types)
+
+        soil_file_line = next(line for line in lines if line.strip().startswith("soil_params_file"))
+        soil_file = soil_file_line.split("=", 1)[1].strip()
+        soil_path = Path(soil_file)
+        if not soil_path.is_absolute():
+            soil_path = (Path(first_cfg).parent / soil_path).resolve()
+        self.src_soil_path = str(soil_path)
+        self.local_soil_path = os.path.join(self.lasam_cfg_dir, Path(self.src_soil_path).name)
+
+        self.nom_dir = os.path.join(work_root, "configs", "noahowp")
+        self.include_nom = os.path.isdir(self.nom_dir)
+        self.nom_mptable = os.path.join(self.nom_dir, "parameters", "MPTABLE.TBL")
+
+        self._soil_lines_cache: Optional[List[str]] = None
+
+    def ensure_local_soil(self):
+        if not os.path.isfile(self.local_soil_path):
+            if not os.path.isfile(self.src_soil_path):
+                raise FileNotFoundError(f"soil_params_file not found: {self.src_soil_path}")
+            shutil.copy2(self.src_soil_path, self.local_soil_path)
+
+        for cfg_name in self.lasam_cfg_files:
+            cfg_path = os.path.join(self.lasam_cfg_dir, cfg_name)
+            with open(cfg_path, "r") as f:
+                lines = f.readlines()
+            out = []
+            for line in lines:
+                if line.strip().startswith("soil_params_file"):
+                    out.append(f"soil_params_file={os.path.abspath(self.local_soil_path)}\n")
+                else:
+                    out.append(line)
+            with open(cfg_path, "w") as f:
+                f.writelines(out)
+
+    def read_soil_lines(self) -> List[str]:
+        if self._soil_lines_cache is not None:
+            return self._soil_lines_cache
+        if not os.path.isfile(self.local_soil_path):
+            raise FileNotFoundError(f"Local soil file not found: {self.local_soil_path}")
+        with open(self.local_soil_path, "r") as f:
+            self._soil_lines_cache = f.readlines()
+        return self._soil_lines_cache
+
+    def write_soil_lines(self, lines: List[str]):
+        with open(self.local_soil_path, "w") as f:
+            f.writelines(lines)
+        self._soil_lines_cache = lines
+
+def read_layer_thickness_baseline(tile_ctx: TileContext) -> List[float]:
+    """
+    Reads 'layer_thickness=' from the first LASAM config in the workspace.
+    Returns a list of floats (cm), e.g. [10.0, 190.0] or [190.0].
+    """
+    cfg_path = os.path.join(tile_ctx.lasam_cfg_dir, tile_ctx.lasam_cfg_files[0])
+    with open(cfg_path, "r") as f:
         lines = f.readlines()
 
-    soil_file_line = next(line for line in lines if line.strip().startswith("soil_params_file"))
-    soil_file = soil_file_line.split("=", 1)[1].strip()
-    soil_path = Path(soil_file)
-    if not soil_path.is_absolute():
-        soil_path = (Path(example_config_path).parent / soil_path).resolve()
+    line = next((ln for ln in lines if ln.strip().startswith("layer_thickness=")), None)
+    if line is None:
+        raise ValueError(f"Missing layer_thickness= in {cfg_path}")
 
-    # Read once, from the resolved path
-    with open(soil_path) as f:
-        soil_lines = f.readlines()
+    rhs = line.split("=", 1)[1].strip()
+    rhs = rhs.split("[", 1)[0].strip()  # drop units like [cm]
+    parts = [p.strip() for p in rhs.split(",") if p.strip()]
+    return [float(p) for p in parts]
 
-    soil_types_line = next(line for line in lines if line.startswith("layer_soil_type="))
-    soil_types = list(map(int, soil_types_line.strip().split("=")[1].split(",")))
-
-
-    # LASAM scalars
-    a = float(next(line.split("=")[1] for line in lines if line.startswith("a=")))
-    b = float(next(line.split("=")[1] for line in lines if line.startswith("b=")))
-    frac_to_GW = float(next(line.split("=")[1] for line in lines if line.startswith("frac_to_GW=")))
-    field_capacity_psi = float(next(line.split("=")[1].split("[")[0] for line in lines if line.startswith("field_capacity_psi=")))
-    spf_factor = float(next(line.split("=")[1] for line in lines if line.startswith("spf_factor=")))
-
-    layer_params = []
-    for soil_type in soil_types:
-        tokens = soil_lines[soil_type].split()
-        alpha = float(tokens[3]); n = float(tokens[4]); Ks = float(tokens[5])
-        layer_params.extend([math.log10(alpha), n, math.log10(Ks)])
-
-    first_soil_type = soil_types[0]
-    first_layer_tokens = soil_lines[first_soil_type].split()
-    theta_e_1 = float(first_layer_tokens[2])
-
-    # NOM optional
-    config_root = os.path.dirname(os.path.dirname(example_config_path))  # trims /lasam
-    nom_dir = os.path.join(config_root, "noahowp")
-    nom_params = []
-    if os.path.isdir(nom_dir):
-        mptable_path = os.path.join(nom_dir, "parameters", "MPTABLE.TBL")
-        try:
-            with open(mptable_path) as f:
-                lines = f.readlines()
-            nom_params_dict = {}
-            for line in lines:
-                if "=" not in line or line.strip().startswith("!"):
-                    continue
-                key, value = line.split("=", 1)
-                param_name = key.strip()
-                if param_name in nom_param_names:
-                    value_str = value.split("!")[0]
-                    values = [v.strip() for v in value_str.split(",") if v.strip()]
-                    nom_params_dict[param_name] = float(values[0])
-            if set(nom_params_dict.keys()) != set(nom_param_names):
-                raise ValueError("Incomplete NOM params in MPTABLE.TBL")
-            nom_params = [nom_params_dict[p] for p in nom_param_names]
-        except Exception as e:
-            print(f"[WARN] NOM parse failed: {e}")
-
-    # Return with 'a' already converted to log10 for optimization
-    return layer_params + [math.log10(a), b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1] + nom_params
-
-def extract_tile_params(full_params, tile_idx: int, n_tiles: int):
-    full_params = np.array(full_params)
-    total_len = len(full_params)
-    if n_tiles == 2 and total_len % 2 == 1:
-        param_slice = full_params[:-1]
-        chunk = len(param_slice) // n_tiles
-        return param_slice[tile_idx * chunk : (tile_idx + 1) * chunk]
-    chunk = total_len // n_tiles
-    return full_params[tile_idx * chunk : (tile_idx + 1) * chunk]
-
-def regenerate_lasam_configs_in_workspace(work_cfg_dir: str, params, include_nom: bool):
-    cfg_files = sorted(f for f in os.listdir(work_cfg_dir) if f.startswith("lasam_config_cat"))
-    if not cfg_files:
-        raise FileNotFoundError(f"No LASAM configs found in {work_cfg_dir}")
-
-    with open(os.path.join(work_cfg_dir, cfg_files[0])) as f:
-        lines0 = f.readlines()
-    soil_types_line = next(line for line in lines0 if line.strip().startswith("layer_soil_type"))
-    soil_types = list(map(int, soil_types_line.strip().split("=", 1)[1].split(",")))
-    num_layers = len(soil_types)
-
-    offset = 3 * num_layers
-    if include_nom:
-        lasam_slice = params
-        scalars = lasam_slice[offset:-6]
-        nom_vals = lasam_slice[-6:]
-    else:
-        lasam_slice = params
-        scalars = lasam_slice[offset:]
-        nom_vals = []
-
-    log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 = scalars
-    a = 10 ** log10_a
-
-    for cfg_name in cfg_files:
-        cfg_path = os.path.join(work_cfg_dir, cfg_name)
+def apply_layer_thickness(tile_ctx: TileContext, layer_1based: int, value: float):
+    """
+    Updates the 'layer_thickness=' line in ALL LASAM configs in this workspace.
+    Preserves any existing number of thickness entries; only replaces the selected layer index.
+    Silently skips if layer index doesn't exist in the file.
+    """
+    for cfg_name in tile_ctx.lasam_cfg_files:
+        cfg_path = os.path.join(tile_ctx.lasam_cfg_dir, cfg_name)
         with open(cfg_path, "r") as f:
             lines = f.readlines()
 
-        # Find and resolve the soil file path
-        soil_file = None
+        out = []
+        changed = False
         for line in lines:
-            if line.strip().startswith("soil_params_file"):
-                soil_file = line.split("=", 1)[1].strip()
-                break
-        if not soil_file:
-            raise FileNotFoundError(f"soil_params_file missing for {cfg_path}")
+            if line.strip().startswith("layer_thickness="):
+                rhs = line.split("=", 1)[1].strip()
 
-        soil_src = Path(soil_file)
-        if not soil_src.is_absolute():
-            soil_src = (Path(cfg_path).parent / soil_src).resolve()
-        if not soil_src.is_file():
-            raise FileNotFoundError(f"soil_params_file not found: {soil_src}")
+                # preserve unit suffix (e.g. "[cm]") if present
+                unit = ""
+                if "[" in rhs:
+                    unit = "[" + rhs.split("[", 1)[1].strip()  # includes closing bracket
+                vals_str = rhs.split("[", 1)[0].strip()
 
-        # Copy once into particle config dir, preserving the original filename (no suffix)
-        local_soil = os.path.join(work_cfg_dir, soil_src.name)
-        if not os.path.isfile(local_soil):
-            shutil.copy2(soil_src, local_soil)
+                parts = [p.strip() for p in vals_str.split(",") if p.strip()]
+                vals = [float(p) for p in parts] if parts else []
 
-        # Update scalar lines & retarget soil file to the local copy
-        new_lines = []
-        for line in lines:
-            s = line.strip()
-            if s.startswith("a="):
-                new_lines.append(f"a={a}\n")
-            elif s.startswith("b="):
-                new_lines.append(f"b={b}\n")
-            elif s.startswith("frac_to_GW="):
-                new_lines.append(f"frac_to_GW={frac_to_GW}\n")
-            elif s.startswith("field_capacity_psi="):
-                new_lines.append(f"field_capacity_psi={field_capacity_psi}[cm]\n")
-            elif s.startswith("spf_factor="):
-                new_lines.append(f"spf_factor={spf_factor}\n")
-            elif s.startswith("soil_params_file"):
-                new_lines.append(f"soil_params_file={os.path.abspath(local_soil)}\n")
+                idx0 = layer_1based - 1
+                if idx0 < 0 or idx0 >= len(vals):
+                    # nothing to change (skip silently)
+                    out.append(line)
+                    continue
+
+                vals[idx0] = float(value)
+                joined = ",".join(f"{v:.6g}" for v in vals)
+                newline = f"layer_thickness={joined}{unit if unit else '[cm]'}\n"
+                out.append(newline)
+                changed = True
             else:
-                new_lines.append(line)
+                out.append(line)
+
+        if changed:
+            with open(cfg_path, "w") as f:
+                f.writelines(out)
+
+def read_lasam_scalar_baseline(tile_ctx: TileContext) -> Dict[str, float]:
+    cfg_path = os.path.join(tile_ctx.lasam_cfg_dir, tile_ctx.lasam_cfg_files[0])
+    with open(cfg_path, "r") as f:
+        lines = f.readlines()
+
+    def _get_float(prefix: str) -> float:
+        return float(next(line.split("=", 1)[1].strip().split("[")[0] for line in lines if line.strip().startswith(prefix)))
+
+    a = _get_float("a=")
+    b = _get_float("b=")
+    frac_to_GW = _get_float("frac_to_GW=")
+    field_capacity_psi = _get_float("field_capacity_psi=")
+    spf_factor = _get_float("spf_factor=")
+
+    return {
+        "log10_a": math.log10(a),
+        "b": b,
+        "frac_to_GW": frac_to_GW,
+        "field_capacity_psi": field_capacity_psi,
+        "spf_factor": spf_factor,
+    }
+
+def read_soil_layer_baseline(tile_ctx: TileContext, layer_1based: int) -> Dict[str, float]:
+    if layer_1based < 1 or layer_1based > tile_ctx.n_layers:
+        raise ValueError(f"Layer {layer_1based} out of range [1, {tile_ctx.n_layers}]")
+    tile_ctx.ensure_local_soil()
+    soil_lines = tile_ctx.read_soil_lines()
+    soil_type = tile_ctx.soil_types[layer_1based - 1]
+    toks = soil_lines[soil_type].split()
+    theta_e = float(toks[2])
+    alpha = float(toks[3])
+    n = float(toks[4])
+    Ks = float(toks[5])
+    return {
+        "theta_e": theta_e,
+        "log_alpha": math.log10(alpha),
+        "n": n,
+        "log_Ks": math.log10(Ks),
+    }
+
+def read_nom_baseline(tile_ctx: TileContext) -> Dict[str, float]:
+    if not tile_ctx.include_nom:
+        return {}
+    if not os.path.isfile(tile_ctx.nom_mptable):
+        raise FileNotFoundError(f"NOM MPTABLE missing: {tile_ctx.nom_mptable}")
+
+    with open(tile_ctx.nom_mptable, "r") as f:
+        lines = f.readlines()
+
+    vals: Dict[str, float] = {}
+    for line in lines:
+        if "=" not in line or line.strip().startswith("!"):
+            continue
+        key, value = line.split("=", 1)
+        param = key.strip()
+        if param in nom_param_names:
+            value_str = value.split("!")[0]
+            first = [v.strip() for v in value_str.split(",") if v.strip()][0]
+            vals[param] = float(first)
+    return vals
+
+def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
+    if param == "log10_a":
+        a = 10 ** float(value)
+        key = "a="
+        out_line = f"a={a}\n"
+    elif param == "b":
+        key = "b="
+        out_line = f"b={float(value)}\n"
+    elif param == "frac_to_GW":
+        key = "frac_to_GW="
+        out_line = f"frac_to_GW={float(value)}\n"
+    elif param == "field_capacity_psi":
+        key = "field_capacity_psi="
+        out_line = f"field_capacity_psi={float(value)}[cm]\n"
+    elif param == "spf_factor":
+        key = "spf_factor="
+        out_line = f"spf_factor={float(value)}\n"
+    else:
+        raise ValueError(f"Unknown LASAM scalar param: {param}")
+
+    for cfg_name in tile_ctx.lasam_cfg_files:
+        cfg_path = os.path.join(tile_ctx.lasam_cfg_dir, cfg_name)
+        with open(cfg_path, "r") as f:
+            lines = f.readlines()
+        out = []
+        for line in lines:
+            if line.strip().startswith(key):
+                out.append(out_line)
+            else:
+                out.append(line)
         with open(cfg_path, "w") as f:
-            f.writelines(new_lines)
+            f.writelines(out)
 
-        # Edit the local soil file entries per layer
-        with open(local_soil, "r") as f:
-            soil_lines = f.readlines()
-        for i, soil_type in enumerate(soil_types):
-            start = i * 3
-            log_alpha, n, log_Ks = lasam_slice[start:start + 3]
-            alpha = 10 ** log_alpha
-            Ks = 10 ** log_Ks
-            toks = soil_lines[soil_type].split()
-            if i == 0:
-                toks[2] = str(theta_e_1)  # only top layer
-            toks[3] = str(alpha)
-            toks[4] = str(n)
-            toks[5] = str(Ks)
-            soil_lines[soil_type] = "\t".join(toks) + "\n"
-        with open(local_soil, "w") as f:
-            f.writelines(soil_lines)
+def apply_soil_param(tile_ctx: TileContext, layer_1based: int, param: str, value: float):
+    # Per your earlier script's behavior, skip silently if the layer is not present
+    if layer_1based < 1 or layer_1based > tile_ctx.n_layers:
+        return
+
+    tile_ctx.ensure_local_soil()
+    soil_lines = tile_ctx.read_soil_lines()
+    soil_type = tile_ctx.soil_types[layer_1based - 1]
+    toks = soil_lines[soil_type].split()
+
+    if param == "log_alpha":
+        alpha = 10 ** float(value)
+        toks[3] = str(alpha)
+    elif param == "n":
+        toks[4] = str(float(value))
+    elif param == "log_Ks":
+        Ks = 10 ** float(value)
+        toks[5] = str(Ks)
+    elif param == "theta_e":
+        toks[2] = str(float(value))
+    else:
+        raise ValueError(f"Unknown soil param: {param}")
+
+    soil_lines[soil_type] = "\t".join(toks) + "\n"
+    tile_ctx.write_soil_lines(soil_lines)
+
+def apply_theta_e_1(tile_ctx: TileContext, value: float):
+    apply_soil_param(tile_ctx, layer_1based=1, param="theta_e", value=float(value))
+
+def apply_nom_param(tile_ctx: TileContext, param: str, value: float):
+    if not tile_ctx.include_nom:
+        return
+    if param not in nom_param_names:
+        raise ValueError(f"Unknown NOM param: {param}")
+    if not os.path.isfile(tile_ctx.nom_mptable):
+        raise FileNotFoundError(f"NOM MPTABLE missing: {tile_ctx.nom_mptable}")
+
+    update_mptable(
+        original_file=tile_ctx.nom_mptable,
+        output_file=tile_ctx.nom_mptable,
+        updated_params={param: float(value)},
+        verbose=False,
+    )
+
+def build_specs_for_tile(tile_ctx: TileContext, tile_idx: int) -> List[ParamSpec]:
+    specs: List[ParamSpec] = []
+    lasam_base = read_lasam_scalar_baseline(tile_ctx)
+
+    request_list = list(CALIBRATION_REQUEST)
+    if DEFAULT_INCLUDE_NOM_IF_PRESENT and tile_ctx.include_nom:
+        existing = {(r.get("kind", "").strip().lower(), r.get("param", "").strip()) for r in request_list}
+        for r in DEFAULT_NOM_REQUEST:
+            key = (r["kind"], r["param"])
+            if key not in existing:
+                request_list.append(r)
+
+    nom_base = read_nom_baseline(tile_ctx) if tile_ctx.include_nom else {}
+
+    for req in request_list:
+        kind = req["kind"].strip().lower()
+        param = req["param"].strip()
+
+        if kind == "soil":
+            layers = req.get("layers", [])
+            if not isinstance(layers, list) or len(layers) == 0:
+                raise ValueError(f"Soil request for {param} must include non-empty layers=[...]")
+            if param not in BOUNDS["soil"]:
+                raise ValueError(f"No bounds registered for soil param: {param}")
+
+            for L in layers:
+                L = int(L)
+                if L < 1 or L > tile_ctx.n_layers:
+                    # skip silently (mixed-layer tiles)
+                    continue
+                base = read_soil_layer_baseline(tile_ctx, L)
+                if param not in base:
+                    raise ValueError(f"Baseline missing soil param {param} for layer {L}")
+                name = f"{param}_L{L}"
+                bnd = BOUNDS["soil"][param]
+                init = float(base[param])
+                specs.append(
+                    ParamSpec(
+                        name=name,
+                        bounds=bnd,
+                        init_value=init,
+                        apply=(lambda ctx, v, L=L, p=param: apply_soil_param(ctx, L, p, v))
+                    )
+                )
+
+        elif kind == "lasam":
+            if param not in BOUNDS["lasam"]:
+                raise ValueError(f"No bounds registered for lasam param: {param}")
+
+            # NEW: layer_thickness supports per-layer selection
+            if param == "layer_thickness":
+                layers = req.get("layers", [])
+                if not isinstance(layers, list) or len(layers) == 0:
+                    raise ValueError("lasam layer_thickness request must include non-empty layers=[...]")
+
+                base_th = read_layer_thickness_baseline(tile_ctx)  # list of floats from file
+                for L in layers:
+                    L = int(L)
+                    idx0 = L - 1
+                    if idx0 < 0 or idx0 >= len(base_th):
+                        # skip silently (user may ask for L2 but file is 1-layer)
+                        continue
+
+                    specs.append(
+                        ParamSpec(
+                            name=f"layer_thickness_L{L}",
+                            bounds=BOUNDS["lasam"][param],
+                            init_value=float(base_th[idx0]),
+                            apply=(lambda ctx, v, L=L: apply_layer_thickness(ctx, L, v)),
+                        )
+                    )
+                continue  # done handling thickness
+
+            # existing theta_e_1 special-case
+            if param == "theta_e_1":
+                base1 = read_soil_layer_baseline(tile_ctx, 1)
+                init = float(base1["theta_e"])
+                specs.append(
+                    ParamSpec(
+                        name="theta_e_1",
+                        bounds=BOUNDS["lasam"][param],
+                        init_value=init,
+                        apply=(lambda ctx, v: apply_theta_e_1(ctx, v))
+                    )
+                )
+            else:
+                if param not in lasam_base:
+                    raise ValueError(f"Baseline missing lasam param: {param}")
+                specs.append(
+                    ParamSpec(
+                        name=param,
+                        bounds=BOUNDS["lasam"][param],
+                        init_value=float(lasam_base[param]),
+                        apply=(lambda ctx, v, p=param: apply_lasam_scalar(ctx, p, v))
+                    )
+                )
 
 
-# === Objective function (concurrent-safe; particle-aware) ===
+        elif kind == "nom":
+            if param not in BOUNDS["nom"]:
+                raise ValueError(f"No bounds registered for NOM param: {param}")
+            if not tile_ctx.include_nom:
+                continue
+            if param not in nom_base:
+                raise ValueError(f"NOM param {param} not found in MPTABLE: {tile_ctx.nom_mptable}")
+            specs.append(
+                ParamSpec(
+                    name=param,
+                    bounds=BOUNDS["nom"][param],
+                    init_value=float(nom_base[param]),
+                    apply=(lambda ctx, v, p=param: apply_nom_param(ctx, p, v))
+                )
+            )
+
+        else:
+            raise ValueError(f"Unknown calibration kind: {kind}")
+
+    return specs
+
+def flatten_specs_for_all_tiles(
+    gage_id: str,
+    model_roots_list: List[str],
+) -> Tuple[List[List[ParamSpec]], List[int], List[Tuple[float, float]], List[float], List[str]]:
+    specs_by_tile: List[List[ParamSpec]] = []
+    tile_counts: List[int] = []
+    bounds_all: List[Tuple[float, float]] = []
+    init_all: List[float] = []
+    names_all: List[str] = []
+
+    for tile_idx, tile_root in enumerate(model_roots_list):
+        work_root = pwork(tile_root, gage_id, 0)
+        ctx0 = TileContext(tile_root, gage_id, 0, work_root)
+        specs = build_specs_for_tile(ctx0, tile_idx)
+
+        specs_by_tile.append(specs)
+        tile_counts.append(len(specs))
+
+        suffix = f"_tile{tile_idx+1}"
+        for s in specs:
+            bounds_all.append(s.bounds)
+            init_all.append(s.init_value)
+            names_all.append(s.name + suffix)
+
+    return specs_by_tile, tile_counts, bounds_all, init_all, names_all
+
+def apply_particle_params_for_tile(tile_ctx: TileContext, specs: List[ParamSpec], values: np.ndarray):
+    needs_soil = any(
+        s.name.startswith(("log_alpha_L", "n_L", "log_Ks_L", "theta_e_1")) or s.name.startswith("theta_e_L")
+        for s in specs
+    )
+    if needs_soil:
+        tile_ctx.ensure_local_soil()
+
+    for spec, v in zip(specs, values):
+        spec.apply(tile_ctx, float(v))
+
+# =========================
+# === Objective function ===
+# =========================
+
 def _safe_objective(args):
     try:
         obj, val_metrics, cal_metrics = objective_function_tiled(args)
@@ -442,8 +801,9 @@ def _safe_objective(args):
     except Exception as e:
         (
             params, particle_idx, gage_id,
-            model_roots, observed_q_root,
-            include_nom_flags, weights,
+            model_roots_list, observed_q_root_local,
+            specs_by_tile, tile_counts, learn_tile_weight,
+            weights_in,
             iteration, param_names
         ) = args
         log_incomplete(
@@ -456,35 +816,36 @@ def _safe_objective(args):
         )
         dummy = {metric_to_calibrate_on: np.nan}
         return ("FAIL", str(e), float("inf"), dummy, dummy)
-
-
 def objective_function_tiled(args):
     (
         params, particle_idx, gage_id,
-        model_roots, observed_q_root,
-        include_nom_flags, weights,
-        *extra  # (iteration, param_names) comes in here; not needed inside
+        model_roots_list, observed_q_root_local,
+        specs_by_tile, tile_counts, learn_tile_weight,
+        weights,
+        *extra  # (iteration, param_names)
     ) = args
 
     check_for_stop_signal_or_low_disk()
-    n_tiles = len(model_roots)
+    n_tiles = len(model_roots_list)
 
-    # Tile weight handling
-    if n_tiles == 2 and len(params) % 2 == 1:
-        tile_weight = params[-1]
+    # Tile weight handling (if enabled and 2 tiles)
+    if n_tiles == 2 and learn_tile_weight:
+        tile_weight = float(params[-1])
         weights = [tile_weight, 1.0 - tile_weight]
         params = params[:-1]
     elif weights is None:
         weights = [1.0 / n_tiles] * n_tiles
 
     # === STEP 1: Hydrology per tile in PARTICLE workspace ===
-    for tile_idx, tile_root in enumerate(model_roots):
-        tile_params = extract_tile_params(params, tile_idx, n_tiles)
-        include_nom = include_nom_flags[tile_idx]
+    offset = 0
+    for tile_idx, tile_root in enumerate(model_roots_list):
+        n = tile_counts[tile_idx]
+        tile_vals = np.array(params[offset:offset + n], dtype=float)
+        offset += n
 
-        work_root   = pwork(tile_root, gage_id, particle_idx)  # .../out/<gage>/particles/pX
+        work_root = pwork(tile_root, gage_id, particle_idx)
         cfg_dir_lsm = os.path.join(work_root, "configs", "lasam")
-        json_dir    = os.path.join(work_root, "json")
+        json_dir = os.path.join(work_root, "json")
         os.makedirs(cfg_dir_lsm, exist_ok=True)
         os.makedirs(json_dir, exist_ok=True)
 
@@ -492,45 +853,35 @@ def objective_function_tiled(args):
         json_files = [f for f in os.listdir(json_dir) if f.endswith(".json")]
         if not json_files:
             raise FileNotFoundError(f"No realization JSON found in {json_dir}")
-        realization_path = os.path.join(json_dir, sorted(json_files)[0])
+        realization_path = os.path.join(json_dir, sorted(json_files)[0])  # FIXED: os.patho -> os.path
 
         # Retarget realization paths into particle workspace (LASAM/PET/NOM)
         base_out_dir = os.path.join(tile_root, "out", gage_id)
         retarget_realization_paths(realization_path, work_root, base_out_dir)
 
-        # Clamp time window to spinup→cal_end for calibration runs
+        # Clamp time window to spinup->cal_end for calibration runs
         with open(realization_path, "r") as f:
             realization = json.load(f)
         realization["time"]["start_time"] = time_cfg["spinup_start"]
-        realization["time"]["end_time"]   = time_cfg["cal_end"]
+        realization["time"]["end_time"] = time_cfg["cal_end"]
         with open(realization_path, "w") as f:
             json.dump(realization, f, indent=4)
 
-        # Update LASAM configs in workspace
-        regenerate_lasam_configs_in_workspace(cfg_dir_lsm, tile_params, include_nom)
-
-        # Update NOM per tile if present (particle-local MPTABLE)
-        if include_nom:
-            nom_tbl = os.path.join(work_root, "configs", "noahowp", "parameters", "MPTABLE.TBL")
-            nom_vals = tile_params[-6:]
-            update_mptable(
-                original_file=nom_tbl,
-                output_file=nom_tbl,
-                updated_params=dict(zip(nom_param_names, nom_vals)),
-                verbose=False,
-            )
+        # Apply parameter set to particle-local LASAM/NOM files
+        tile_ctx = TileContext(tile_root, gage_id, particle_idx, work_root)
+        apply_particle_params_for_tile(tile_ctx, specs_by_tile[tile_idx], tile_vals)
 
         # Clear old divide outputs in particle workspace
         div_dir = os.path.join(work_root, "outputs", "div")
         os.makedirs(div_dir, exist_ok=True)
         for item in list(os.listdir(div_dir)):
-            if item.startswith("."):  # keep hidden files
+            if item.startswith("."):
                 continue
-            p = os.path.join(div_dir, item)
-            if os.path.isfile(p) or os.path.islink(p):
-                os.remove(p)
-            elif os.path.isdir(p):
-                shutil.rmtree(p)
+            pth = os.path.join(div_dir, item)
+            if os.path.isfile(pth) or os.path.islink(pth):
+                os.remove(pth)
+            elif os.path.isdir(pth):
+                shutil.rmtree(pth)
 
         # Run hydrology (divide scale) for this tile & particle
         tile_sandbox_config = os.path.join(cfg.project_root, "configs", f"sandbox_config_tile{tile_idx+1}.yaml")
@@ -538,6 +889,7 @@ def objective_function_tiled(args):
         env["NGEN_CONCURRENT_PARTICLES"] = "1"
         env["NGEN_PARTICLE_ID"] = str(particle_idx)
         env["NGEN_REALIZATION_PATH"] = realization_path
+
         ret = subprocess.call(
             ["python", sandbox_path, "-i", tile_sandbox_config, "-run", "--gage_id", gage_id],
             cwd=tile_root,
@@ -547,7 +899,7 @@ def objective_function_tiled(args):
             raise RuntimeError(f"Hydrology failed: gage {gage_id} | pid {particle_idx} | tile {tile_idx}")
 
     # === STEP 2: Weighted qlat build in router tile particle workspace ===
-    router_tile_root = model_roots[0]
+    router_tile_root = model_roots_list[0]
     router_work = pwork(router_tile_root, gage_id, particle_idx)
 
     weighted_div_dir = os.path.join(router_work, "outputs", "div_weighted")
@@ -555,7 +907,7 @@ def objective_function_tiled(args):
         shutil.rmtree(weighted_div_dir)
     os.makedirs(weighted_div_dir, exist_ok=True)
 
-    src_div_dirs = [resolve_div_dir(root, gage_id, particle_idx) for root in model_roots]
+    src_div_dirs = [resolve_div_dir(root, gage_id, particle_idx) for root in model_roots_list]
 
     # Collect file list from first non-empty source
     files = []
@@ -573,8 +925,8 @@ def objective_function_tiled(args):
             details.append(f"tile{idx}: dir={d}, exists={exists}, nfiles={count}")
         raise RuntimeError("No divide CSVs for routing: " + "; ".join(details))
 
-
-    if len(model_roots) == 1:
+    # Build weighted qlat (single tile -> copy)
+    if len(model_roots_list) == 1:
         src = src_div_dirs[0]
         for fname in files:
             shutil.copy2(os.path.join(src, fname), os.path.join(weighted_div_dir, fname))
@@ -586,7 +938,8 @@ def objective_function_tiled(args):
                 fp = os.path.join(div_dir, fname)
                 if os.path.exists(fp):
                     if fname.startswith("nex-"):
-                        df = pd.read_csv(fp, header=None); df.columns = ["Time Step", "Time", "q_out"]
+                        df = pd.read_csv(fp, header=None)
+                        df.columns = ["Time Step", "Time", "q_out"]
                     else:
                         df = pd.read_csv(fp)
                     if df_ref is None:
@@ -669,16 +1022,24 @@ def objective_function_tiled(args):
     )
 
     # === STEP 5: Metrics ===
-    sim_df = pd.read_csv(output_path, parse_dates=["current_time"]).set_index("current_time")["flow"].resample("1h").mean()
-    obs_df = get_observed_q(os.path.join(observed_q_root, "successful_sites_resampled", f"{gage_id}.csv"))
+    sim_df = (
+        pd.read_csv(output_path, parse_dates=["current_time"])
+        .set_index("current_time")["flow"]
+        .resample("1h")
+        .mean()
+    )
+    obs_path = os.path.join(observed_q_root_local, "successful_sites_resampled", f"{gage_id}.csv")
+    obs_df = get_observed_q(obs_path)
 
     sim_cal, obs_cal = sim_df[cal_start:cal_end].dropna(), obs_df[cal_start:cal_end].dropna()
     sim_val, obs_val = sim_df[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
     sim_cal, obs_cal = sim_cal.align(obs_cal, join="inner")
     sim_val, obs_val = sim_val.align(obs_val, join="inner")
 
-    if len(sim_cal) > 0: sim_cal.iloc[-1] += 1e-8
-    if len(obs_cal) > 0: obs_cal.iloc[-1] += 1e-8
+    if len(sim_cal) > 0:
+        sim_cal.iloc[-1] += 1e-8
+    if len(obs_cal) > 0:
+        obs_cal.iloc[-1] += 1e-8
 
     cal_metrics = compute_metrics(sim_cal, obs_cal, event_threshold=1e-2)
     val_metrics = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
@@ -698,7 +1059,10 @@ def objective_function_tiled(args):
 
     return -cal_metrics[metric_to_calibrate_on], val_metrics, cal_metrics
 
-# === PSO ===
+# =========================
+# === PSO implementation ===
+# =========================
+
 class Particle:
     def __init__(self, bounds, init_position=None):
         self.position = np.array(init_position) if init_position is not None else np.array(
@@ -706,16 +1070,16 @@ class Particle:
         )
         self.velocity = np.array([0.1 * (high - low) * np.random.uniform(-1, 1) for low, high in bounds])
         self.best_position = np.copy(self.position)
-        self.best_value = float('inf')
-        self.current_value = float('inf')
+        self.best_value = float("inf")
+        self.current_value = float("inf")
         self.stagnation_counter = 0
 
     def reset(self, bounds):
         self.position = np.array([np.random.uniform(low, high) for low, high in bounds])
         self.velocity = np.array([0.1 * (high - low) * np.random.uniform(-1, 1) for low, high in bounds])
         self.best_position = np.copy(self.position)
-        self.best_value = float('inf')
-        self.current_value = float('inf')
+        self.best_value = float("inf")
+        self.current_value = float("inf")
         self.stagnation_counter = 0
 
     def update_velocity(self, global_best_position, w, c1, c2):
@@ -729,14 +1093,27 @@ class Particle:
         self.position += self.velocity
         for i in range(len(self.position)):
             if self.position[i] < bounds[i][0]:
-                self.position[i] = bounds[i][0]; self.velocity[i] *= -0.5
+                self.position[i] = bounds[i][0]
+                self.velocity[i] *= -0.5
             elif self.position[i] > bounds[i][1]:
-                self.position[i] = bounds[i][1]; self.velocity[i] *= -0.5
+                self.position[i] = bounds[i][1]
+                self.velocity[i] *= -0.5
 
 class PSO:
-    def __init__(self, n_particles, bounds, n_iterations, gage_id,
-                 init_position, metric_to_calibrate_on="kge",
-                 include_nom_flags=None, param_names=None, stagnation_threshold=10):
+    def __init__(
+        self,
+        n_particles,
+        bounds,
+        n_iterations,
+        gage_id,
+        init_position,
+        metric_to_calibrate_on="kge",
+        param_names=None,
+        specs_by_tile=None,
+        tile_counts=None,
+        learn_tile_weight=False,
+        stagnation_threshold=10,
+    ):
         self.particles = [
             Particle(bounds, init_position=init_position if i == 0 else None)
             for i in range(n_particles)
@@ -744,45 +1121,44 @@ class PSO:
         self.bounds = bounds
         self.n_iterations = n_iterations
         self.gage_id = gage_id
-        self.global_best_position = self.particles[0].position
-        self.global_best_value = float('inf')
+        self.global_best_position = np.copy(self.particles[0].position)
+        self.global_best_value = float("inf")
         self.metric_to_calibrate_on = metric_to_calibrate_on
-        self.include_nom_flags = include_nom_flags or []
         self.param_names = param_names or [f"p{i}" for i in range(len(bounds))]
         self.best_cal_metrics = {}
         self.best_val_metrics = {}
+        self.stagnation_threshold = stagnation_threshold
+
+        self.specs_by_tile = specs_by_tile or []
+        self.tile_counts = tile_counts or []
+        self.learn_tile_weight = learn_tile_weight
 
     def optimize(self):
         start_time = datetime.now()
         log_rows = []
         log_path = os.path.join(logging_dir, f"{self.gage_id}.csv")
-        stagnation_threshold = 10
         w_start, w_end = 0.9, 0.4
-
         pool_size = max_particle_procs or len(self.particles)
 
         for iteration in range(self.n_iterations):
             print(f"\n--- Iteration {iteration + 1} for gage {self.gage_id} ---")
             w = w_start - (w_start - w_end) * (iteration / self.n_iterations)
 
-            # Build argument list for all particles
             args_list = []
             for i, p in enumerate(self.particles):
                 print(f"[INFO] gage {self.gage_id} | iter {iteration+1} | particle {i}")
                 args_list.append((
                     p.position, i, self.gage_id,
                     model_roots, observed_q_root,
-                    self.include_nom_flags,
+                    self.specs_by_tile, self.tile_counts, self.learn_tile_weight,
                     [1.0 / len(model_roots)] * len(model_roots),
-                    iteration + 1,          # NEW: for logging
-                    self.param_names        # NEW: for column names
+                    iteration + 1,
+                    self.param_names
                 ))
-
 
             with ThreadPool(processes=pool_size) as pool:
                 results = pool.map(_safe_objective, args_list)
 
-            # Reduction step
             for idx, r in enumerate(results):
                 status, err, objective_value, val_metrics, cal_metrics = r
                 particle = self.particles[idx]
@@ -805,7 +1181,6 @@ class PSO:
                     self.best_val_metrics = val_metrics
                     particle.stagnation_counter = 0
 
-                # Log params and metrics per particle
                 row = {
                     "iteration": iteration + 1,
                     "particle": idx,
@@ -817,53 +1192,53 @@ class PSO:
                 }
                 log_rows.append(row)
 
-            # ---- Identify this iteration’s leader (by current_value) ----
             try:
                 current_objs = [p.current_value for p in self.particles]
                 best_idx_now = int(np.nanargmin(current_objs))
             except Exception:
-                best_idx_now = None  # fallback: no leader protection if undefined
+                best_idx_now = None
 
-            # ---- Stagnation resets (skip the leader) ----
             for i, p in enumerate(self.particles):
-                if p.stagnation_counter >= stagnation_threshold and (best_idx_now is None or i != best_idx_now):
-                    print(f"Resetting particle {i} after {stagnation_threshold} stagnant iterations.")
-                    # (optional) audit row:
+                if p.stagnation_counter >= self.stagnation_threshold and (best_idx_now is None or i != best_idx_now):
+                    print(f"Resetting particle {i} after {self.stagnation_threshold} stagnant iterations.")
                     log_rows.append({
                         "iteration": iteration + 1,
                         "particle": i,
                         "status": "RESET",
-                        "reason": f"stagnation >= {stagnation_threshold}",
+                        "reason": f"stagnation >= {self.stagnation_threshold}",
                     })
                     p.reset(self.bounds)
 
-            # Persist log after each iteration
             pd.DataFrame(log_rows).to_csv(log_path, index=False)
 
-            # Swarm update
             for p in self.particles:
                 p.update_velocity(self.global_best_position, w=w, c1=1.5, c2=1.5)
                 p.update_position(self.bounds)
 
             print(f"Global best objective so far: {-self.global_best_value:.4f}")
 
-        # === Final full-period run in BEST particle workspace ===
+        # === Final full-period run using BEST position, reusing pid=0 workspace (preserves original behavior) ===
         print(f"\n[INFO] Final full-period validation for gage {self.gage_id}...")
+        best_pid = 0
+
         n_tiles = len(model_roots)
         weights = [1.0 / n_tiles] * n_tiles
-        if n_tiles == 2 and len(self.global_best_position) % 2 == 1:
-            weights = [self.global_best_position[-1], 1.0 - self.global_best_position[-1]]
+        best_params = np.copy(self.global_best_position)
 
-        best_pid = 0  # reuse pid=0 workspace for the final run
+        if n_tiles == 2 and self.learn_tile_weight:
+            wgt = float(best_params[-1])
+            weights = [wgt, 1.0 - wgt]
+            best_params = best_params[:-1]
 
-        # 1) Hydrology per tile with full window (spinup to val_end)
+        offset = 0
         for tile_idx, tile_root in enumerate(model_roots):
-            tile_params = extract_tile_params(self.global_best_position, tile_idx, n_tiles)
-            include_nom = self.include_nom_flags[tile_idx]
+            n = self.tile_counts[tile_idx]
+            tile_vals = np.array(best_params[offset:offset + n], dtype=float)
+            offset += n
 
-            work_root   = pwork(tile_root, self.gage_id, best_pid)
+            work_root = pwork(tile_root, self.gage_id, best_pid)
             cfg_dir_lsm = os.path.join(work_root, "configs", "lasam")
-            json_dir    = os.path.join(work_root, "json")
+            json_dir = os.path.join(work_root, "json")
             os.makedirs(cfg_dir_lsm, exist_ok=True)
             os.makedirs(json_dir, exist_ok=True)
 
@@ -878,48 +1253,44 @@ class PSO:
             with open(realization_path, "r") as f:
                 realization = json.load(f)
             realization["time"]["start_time"] = time_cfg["spinup_start"]
-            realization["time"]["end_time"]   = time_cfg["val_end"]
+            realization["time"]["end_time"] = time_cfg["val_end"]
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
 
-            regenerate_lasam_configs_in_workspace(cfg_dir_lsm, tile_params, include_nom)
+            tile_ctx = TileContext(tile_root, self.gage_id, best_pid, work_root)
+            apply_particle_params_for_tile(tile_ctx, self.specs_by_tile[tile_idx], tile_vals)
 
-            if include_nom:
-                nom_tbl = os.path.join(work_root, "configs", "noahowp", "parameters", "MPTABLE.TBL")
-                nom_vals = tile_params[-6:]
-                update_mptable(
-                    original_file=nom_tbl,
-                    output_file=nom_tbl,
-                    updated_params=dict(zip(nom_param_names, nom_vals)),
-                    verbose=False,
-                )
-
-            # Clean div outputs
             div_dir = os.path.join(work_root, "outputs", "div")
             os.makedirs(div_dir, exist_ok=True)
             for item in list(os.listdir(div_dir)):
-                if item.startswith("."): continue
+                if item.startswith("."):
+                    continue
                 pth = os.path.join(div_dir, item)
-                if os.path.isfile(pth) or os.path.islink(pth): os.remove(pth)
-                elif os.path.isdir(pth): shutil.rmtree(pth)
+                if os.path.isfile(pth) or os.path.islink(pth):
+                    os.remove(pth)
+                elif os.path.isdir(pth):
+                    shutil.rmtree(pth)
 
             tile_sandbox_config = os.path.join(cfg.project_root, "configs", f"sandbox_config_tile{tile_idx+1}.yaml")
             env = os.environ.copy()
             env["NGEN_CONCURRENT_PARTICLES"] = "1"
             env["NGEN_PARTICLE_ID"] = str(best_pid)
             env["NGEN_REALIZATION_PATH"] = realization_path
+
             ret = subprocess.call(
                 ["python", sandbox_path, "-i", tile_sandbox_config, "-run", "--gage_id", self.gage_id],
-                cwd=tile_root, env=env
+                cwd=tile_root,
+                env=env
             )
             if ret != 0:
                 raise RuntimeError(f"Final hydrology failed: gage {self.gage_id} | tile {tile_idx}")
 
-        # 2) Weighted qlat for final run
         router_tile_root = model_roots[0]
         router_work = pwork(router_tile_root, self.gage_id, best_pid)
+
         weighted_div_dir = os.path.join(router_work, "outputs", "div_weighted")
-        if os.path.exists(weighted_div_dir): shutil.rmtree(weighted_div_dir)
+        if os.path.exists(weighted_div_dir):
+            shutil.rmtree(weighted_div_dir)
         os.makedirs(weighted_div_dir, exist_ok=True)
 
         src_div_dirs = [resolve_div_dir(root, self.gage_id, best_pid) for root in model_roots]
@@ -928,11 +1299,11 @@ class PSO:
             if os.path.isdir(d):
                 cand = [f for f in os.listdir(d) if (f.startswith("cat-") or f.startswith("nex-")) and f.endswith(".csv")]
                 if cand:
-                    files = cand; break
+                    files = cand
+                    break
         if not files:
             print("[ERROR] No divide CSVs found for final routing.")
-            dummy = {metric_to_calibrate_on: -np.inf}
-            return (1e12, dummy, dummy)
+            return
 
         if len(model_roots) == 1:
             src = src_div_dirs[0]
@@ -940,18 +1311,22 @@ class PSO:
                 shutil.copy2(os.path.join(src, fname), os.path.join(weighted_div_dir, fname))
         else:
             for fname in files:
-                dfs = []; df_ref = None
+                dfs = []
+                df_ref = None
                 for t_idx, div_dir in enumerate(src_div_dirs):
                     fp = os.path.join(div_dir, fname)
                     if os.path.exists(fp):
                         if fname.startswith("nex-"):
-                            df = pd.read_csv(fp, header=None); df.columns = ["Time Step", "Time", "q_out"]
+                            df = pd.read_csv(fp, header=None)
+                            df.columns = ["Time Step", "Time", "q_out"]
                         else:
                             df = pd.read_csv(fp)
-                        if df_ref is None: df_ref = df.copy()
+                        if df_ref is None:
+                            df_ref = df.copy()
                         dfs.append(df["q_out"] * weights[t_idx])
                 if dfs:
-                    out_df = df_ref.copy(); out_df["q_out"] = sum(dfs)
+                    out_df = df_ref.copy()
+                    out_df["q_out"] = sum(dfs)
                     out_df["Time"] = pd.to_datetime(out_df["Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
                     outpath = os.path.join(weighted_div_dir, fname)
                     if fname.startswith("nex-"):
@@ -959,52 +1334,71 @@ class PSO:
                     else:
                         out_df.to_csv(outpath, index=False)
 
-        # 3) Final routing
         troute_path = os.path.join(router_work, "configs", "troute_config.yaml")
         with open(troute_path) as f:
             troute_cfg = yaml.safe_load(f)
+
         nts_full = int((val_end - spinup_start) / pd.Timedelta(seconds=300))
         troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
         troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts_full
         troute_cfg["compute_parameters"]["forcing_parameters"]["qlat_input_folder"] = weighted_div_dir
+
         particle_troute_dir = os.path.join(router_work, "troute")
         os.makedirs(particle_troute_dir, exist_ok=True)
         op = troute_cfg.setdefault("output_parameters", {})
         so = op.setdefault("stream_output", {})
         so["stream_output_directory"] = particle_troute_dir
+
         mask_path = so.get("mask_output")
         if not (isinstance(mask_path, str) and os.path.isfile(mask_path)):
             orig_mask = os.path.join(router_tile_root, "out", self.gage_id, "configs", "mask_output.yaml")
-            if os.path.isfile(orig_mask): so["mask_output"] = orig_mask
-            else: so.pop("mask_output", None)
+            if os.path.isfile(orig_mask):
+                so["mask_output"] = orig_mask
+            else:
+                so.pop("mask_output", None)
+
         with open(troute_path, "w") as f:
             yaml.safe_dump(troute_cfg, f)
+
         for fn in os.listdir(particle_troute_dir):
             if fn.endswith((".nc", ".csv", ".parquet")):
                 os.remove(os.path.join(particle_troute_dir, fn))
-        env = os.environ.copy(); env["NGEN_CONCURRENT_PARTICLES"] = "1"; env["NGEN_PARTICLE_ID"] = str(best_pid)
+
+        env = os.environ.copy()
+        env["NGEN_CONCURRENT_PARTICLES"] = "1"
+        env["NGEN_PARTICLE_ID"] = str(best_pid)
         subprocess.call(["python3", "-m", "nwm_routing", "-f", "-V4", troute_path], env=env)
 
-        # 4) Extract final hydrograph
-        postproc_dir = os.path.join(router_work, "postproc"); os.makedirs(postproc_dir, exist_ok=True)
+        postproc_dir = os.path.join(router_work, "postproc")
+        os.makedirs(postproc_dir, exist_ok=True)
         final_output_path = os.path.join(postproc_dir, f"{self.gage_id}_best.csv")
+
         get_hydrograph_path = os.path.join(project_root, "model_assessment", "util", "get_hydrograph.py")
         summary_csv = os.path.join(project_root, "model_assessment", "util", "downstream_flowpath_summary.csv")
-        subprocess.call([
-            "python", get_hydrograph_path,
-            "--gage_id", self.gage_id,
-            "--output", final_output_path,
-            "--troute_dir", os.path.join(router_work, "troute"),
-            "--summary", summary_csv,
-        ], cwd=postproc_dir, env=env)
 
-        # 5) Final validation metrics
-        obs_df = get_observed_q(os.path.join(observed_q_root, "successful_sites_resampled", f"{self.gage_id}.csv"))
+        subprocess.call(
+            [
+                "python", get_hydrograph_path,
+                "--gage_id", self.gage_id,
+                "--output", final_output_path,
+                "--troute_dir", os.path.join(router_work, "troute"),
+                "--summary", summary_csv,
+            ],
+            cwd=postproc_dir,
+            env=env,
+        )
+
+        obs_path = os.path.join(observed_q_root, "successful_sites_resampled", f"{self.gage_id}.csv")
+        obs_df = get_observed_q(obs_path)
         sim_df = pd.read_csv(final_output_path, parse_dates=["current_time"]).set_index("current_time")["flow"].resample("1h").mean()
+
         sim_val, obs_val = sim_df[val_start:val_end].dropna(), obs_df[val_start:val_end].dropna()
         sim_val, obs_val = sim_val.align(obs_val, join="inner")
-        if len(sim_val) > 0: sim_val.iloc[-1] += 1e-8
-        if len(obs_val) > 0: obs_val.iloc[-1] += 1e-8
+        if len(sim_val) > 0:
+            sim_val.iloc[-1] += 1e-8
+        if len(obs_val) > 0:
+            obs_val.iloc[-1] += 1e-8
+
         val_metrics_final = compute_metrics(sim_val, obs_val, event_threshold=1e-2)
 
         final_row = {
@@ -1019,65 +1413,18 @@ class PSO:
             existing = pd.read_csv(log_path)
         pd.concat([existing, pd.DataFrame([final_row])]).to_csv(log_path, index=False)
 
-        return self.global_best_position, self.global_best_value, self.best_val_metrics.get(self.metric_to_calibrate_on, np.nan), datetime.now() - start_time
+        return
 
+# =========================
 # === Per-gage wrapper ===
+# =========================
+
 def calibrate_gage(gage_id: str):
-    n_tiles = len(model_roots)
-    all_init_params, all_bounds, include_nom_flags = [], [], []
-    tile_layer_counts = []
+    specs_by_tile, tile_counts, all_bounds, all_init_params, names = flatten_specs_for_all_tiles(gage_id, model_roots)
 
-    for tile_idx, root in enumerate(model_roots):
-        # Use particle 0 workspace as template source (scaffolded during -conf)
-        cfg_dir = os.path.join(pwork(root, gage_id, 0), "configs", "lasam")
-        cfg_file = sorted(f for f in os.listdir(cfg_dir) if f.startswith("lasam_config_cat"))[0]
-        example_path = os.path.join(cfg_dir, cfg_file)
-
-        tile_init = extract_initial_params(example_path)
-
-        # Determine number of layers for bounds & naming
-        with open(example_path) as f:
-            lines = f.readlines()
-        soil_types_line = next(line for line in lines if line.startswith("layer_soil_type="))
-        num_layers = len(soil_types_line.strip().split("=")[1].split(","))
-        tile_layer_counts.append(num_layers)
-
-        # Bounds per tile
-        tile_bounds = []
-        for _ in range(num_layers):
-            tile_bounds.extend([(-4, 0.0), (1.02, 3.0), (-4, 2)])  # log_alpha, n, log_Ks
-        tile_bounds.extend([
-            (-8, -1),         # log10_a
-            (0.01, 5.0),      # b
-            (1e-4, 1 - 1e-4), # frac_to_GW
-            (10.0, 500.0),    # field_capacity_psi
-            (0.1, 1.0),       # spf_factor
-            (0.3, 0.6),       # theta_e_1
-        ])
-
-        # NOM detection
-        include_nom = os.path.isdir(os.path.join(pwork(root, gage_id, 0), "configs", "noahowp"))
-        if include_nom:
-            tile_bounds.extend(nom_param_bounds)
-        include_nom_flags.append(include_nom)
-
-        all_init_params.extend(tile_init)
-        all_bounds.extend(tile_bounds)
-
-    # Build readable param names for logging
-    names = []
-    for tile_idx, num_layers in enumerate(tile_layer_counts):
-        suffix = f"_tile{tile_idx+1}"
-        for i in range(1, num_layers+1):
-            names.extend([f"log_alpha_{i}{suffix}", f"n_{i}{suffix}", f"log_Ks_{i}{suffix}"])
-        names.extend([f"log10_a{suffix}", f"b{suffix}", f"frac_to_GW{suffix}",
-                      f"field_capacity_psi{suffix}", f"spf_factor{suffix}", f"theta_e_1{suffix}"])
-        if include_nom_flags[tile_idx]:
-            names.extend([f"{n}{suffix}" for n in nom_param_names])
-
-    # Optional learned weight for 2 tiles
-    if n_tiles == 2:
-        all_init_params.append(0.8)  # tile0 weight
+    learn_tile_weight = (len(model_roots) == 2 and LEARN_TILE_WEIGHT_IF_2TILES)
+    if learn_tile_weight:
+        all_init_params.append(0.8)
         all_bounds.append((0.0, 1.0))
         names.append("tile_weight")
 
@@ -1088,26 +1435,26 @@ def calibrate_gage(gage_id: str):
         gage_id=gage_id,
         init_position=all_init_params,
         metric_to_calibrate_on=metric_to_calibrate_on,
-        include_nom_flags=include_nom_flags,
         param_names=names,
+        specs_by_tile=specs_by_tile,
+        tile_counts=tile_counts,
+        learn_tile_weight=learn_tile_weight,
+        stagnation_threshold=10,
     )
     pso.optimize()
 
+# =========================
 # === MAIN ===
+# =========================
+
 if __name__ == "__main__":
     from multiprocessing import get_context
 
     start = datetime.now()
     gage_list = pd.read_csv(cfg.gages_file, dtype={"gage_id": str})["gage_id"].tolist()
 
-    # Outer pool: parallelize across gages
     ctx = get_context("spawn")
     with ctx.Pool(processes=max_cores_for_gages) as pool:
         pool.map(calibrate_gage, gage_list)
 
     print(f"Total wall time: {datetime.now() - start}")
-
-
-
-
-
