@@ -163,6 +163,12 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
     "nom": dict(zip(nom_param_names, nom_param_bounds)),
 }
 
+# Per-layer bounds override for thickness (cm). If a layer isn't listed, fallback to BOUNDS["lasam"]["layer_thickness"].
+LAYER_THICKNESS_BOUNDS = {
+    1: (10.0, 100.0),     # top layer thinner
+    2: (10.0, 400.0),  # bottom layer can be much thicker
+}
+
 # =========================
 # === HELPERS ============
 # =========================
@@ -700,11 +706,12 @@ def build_specs_for_tile(tile_ctx: TileContext, tile_idx: int) -> List[ParamSpec
                     specs.append(
                         ParamSpec(
                             name=f"layer_thickness_L{L}",
-                            bounds=BOUNDS["lasam"][param],
+                            bounds=LAYER_THICKNESS_BOUNDS.get(L, BOUNDS["lasam"][param]),
                             init_value=float(base_th[idx0]),
                             apply=(lambda ctx, v, L=L: apply_layer_thickness(ctx, L, v)),
                         )
                     )
+
                 continue  # done handling thickness
 
             # existing theta_e_1 special-case
