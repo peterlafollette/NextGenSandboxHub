@@ -1,8 +1,6 @@
-sandbox_dir  : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
-input_dir     : "/Users/peterlafollette/CIROH_project/in"  # user-specified
-output_dir    : "/Users/peterlafollette/CIROH_project/model1/out" # user-specified
-# output_dir    : "/Users/peterlafollette/CIROH_project/model2/out" # user-specified
-### if you have the ram to spare, making the output directory on a ramdisk is a good idea
+sandbox_dir  : "/users/4/plafolle/CIROH_project14/NextGenSandboxHub"
+input_dir     : "/tmp/in"  # user-specified
+output_dir    : "/tmp/model1/out" # user-specified
 
 
 ########################################################################
@@ -10,8 +8,8 @@ output_dir    : "/Users/peterlafollette/CIROH_project/model1/out" # user-specifi
 subsetting :
   hf_version               : "2.1.1" # Only enter version number, e.g. "2.2" or "2.1.1"
   # Ensure that this gpkg matches the hf_version specified above:
-  hf_gpkg_path             : "/Users/peterlafollette/CIROH_project/conus_nextgen.gpkg"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
-  dem_output_dir           : "/Users/peterlafollette/CIROH_project/in/dem" # create `dem` directory yourself # output
+  hf_gpkg_path             : "/users/4/plafolle/CIROH_project14/conus_nextgen.gpkg"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
+  dem_output_dir           : "/tmp/in/dem" # create `dem` directory yourself # output
   number_processors        : 1
   compute_divide_attributes: true #necessary if using hydrofabric v 2.1.1, will cause an error if using hydrofabric v 2.2
 
@@ -22,7 +20,7 @@ subsetting :
       gage_ids     : "01105000" #for instance, ["01105000"]
     use_gage_file :
       use_gage_file : TRUE
-      gage_file     : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub/basin_IDs/basin_IDs.csv"
+      gage_file     : "/users/4/plafolle/CIROH_project14/NextGenSandboxHub/basin_IDs/basin_IDs.csv"
       column_name   : "gage_id"
     use_gpkg :
       use_gpkg  : FALSE
@@ -33,12 +31,12 @@ subsetting :
 #forcing data is stored under <input_dir>/gage_id/data/forcing
 forcings : 
   forcing_format     : ".nc"
-  forcing_time       : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2024-09-30 23:00:00"}
+  forcing_time       : {"start_time" : "1995-10-01 00:00:00", "end_time" : "2024-09-30 23:00:00"}
 
 ########################################################################
 formulation :
-  ngen_dir           : "/Users/peterlafollette/CIROH_project/ngen" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
-  # models             : "PET, CFE, T-route"
+  ngen_dir           : "/users/4/plafolle/CIROH_project14/ngen" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
+  #models             : "PET, CFE, T-route"
   models             : "PET, LASAM, T-route"
   # models             : "NOM, LASAM, T-route"
   # models             : "NOM, CFE, T-route"
