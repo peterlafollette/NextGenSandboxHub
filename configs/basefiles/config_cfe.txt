@@ -27,6 +27,8 @@ surface_runoff_scheme=NASH_CASCADE
 N_nash_surface=5[]
 K_nash_surface=1.5211547303714987[h-1]
 nash_storage_surface=0.0,0.0,0.0,0.0,0.0[]
+retention_depth_nash_surface=0.0
+Kinf_nash_surface=0.0
 #
 #surface_water_partitioning_scheme=Xinanjiang
 #a_Xinanjiang_inflection_point_parameter=0.01

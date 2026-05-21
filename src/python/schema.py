@@ -31,16 +31,24 @@ def get_schema_model_attributes(gdf_model):
     schema = gdf_model.dtypes
     
     df = {}
+
+    def has_layer_one(name, stem):
+        return (
+            f"{stem}=1" in name
+            or name.endswith(f"{stem}.1")
+            or name.endswith(f"{stem}_1")
+        )
+
     for d in schema.index:
-        if 'bexp_soil_layers_stag=1' in d:
+        if has_layer_one(d, 'bexp_soil_layers_stag'):
             df['soil_b'] = d
-        if 'dksat_soil_layers_stag=1' in d:
+        if has_layer_one(d, 'dksat_soil_layers_stag'):
             df['soil_dksat'] = d
-        if 'psisat_soil_layers_stag=1' in d:
+        if has_layer_one(d, 'psisat_soil_layers_stag'):
             df['soil_psisat'] = d
-        if 'smcmax_soil_layers_stag=1' in d:
+        if has_layer_one(d, 'smcmax_soil_layers_stag'):
             df['soil_smcmax'] = d
-        if 'smcwlt_soil_layers_stag=1' in d:
+        if has_layer_one(d, 'smcwlt_soil_layers_stag'):
             df['soil_smcwlt'] = d
     
         if 'ISLTYP' in d:

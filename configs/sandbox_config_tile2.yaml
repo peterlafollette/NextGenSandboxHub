@@ -1,17 +1,17 @@
-sandbox_dir  : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub"
-input_dir     : "/Users/peterlafollette/CIROH_project/in"  # user-specified
-output_dir    : "/Users/peterlafollette/CIROH_project/model2/out" # user-specified
+sandbox_dir  : "${NGSH_ROOT}"
+input_dir     : "${CIROH_INPUT_DIR}"  # user-specified
+output_dir    : "${NGEN_MODEL_ROOT}/out" # user-specified
 
 
 ########################################################################
 # Subset a basin using hydrofabric; see src/R/main.R for further details
 subsetting :
-  hf_version               : "2.1.1" # Only enter version number, e.g. "2.2" or "2.1.1"
+  hf_version               : "2.2" # Only enter version number, e.g. "2.2" or "2.1.1"
   # Ensure that this gpkg matches the hf_version specified above:
-  hf_gpkg_path             : "/Users/peterlafollette/CIROH_project/conus_nextgen.gpkg"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
-  dem_output_dir           : "/Users/peterlafollette/CIROH_project/in/dem" # create `dem` directory yourself # output
+  hf_gpkg_path             : "${CIROH_HF_GPKG}"  #for example, "<paht_to>/conus_nextgen.gpkg" # input
+  dem_output_dir           : "${CIROH_INPUT_DIR}/dem" # create `dem` directory yourself # output
   number_processors        : 1
-  compute_divide_attributes: true #necessary if using hydrofabric v 2.1.1, will cause an error if using hydrofabric v 2.2
+  # compute_divide_attributes: true # necessary for hydrofabric v 2.1.1; leave disabled for hydrofabric v 2.2
 
   # Note: only gage_ids that fall within the domain of the hydrofabric listed above will be subsetted
   options :
@@ -20,7 +20,7 @@ subsetting :
       gage_ids     : "01105000" #for instance, ["01105000"]
     use_gage_file :
       use_gage_file : TRUE
-      gage_file     : "/Users/peterlafollette/CIROH_project/NextGenSandboxHub/basin_IDs/basin_IDs.csv"
+      gage_file     : "${BASIN_CSV}"
       column_name   : "gage_id"
     use_gpkg :
       use_gpkg  : FALSE
@@ -31,14 +31,14 @@ subsetting :
 #forcing data is stored under <input_dir>/gage_id/data/forcing
 forcings : 
   forcing_format     : ".nc"
-  forcing_time       : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2024-09-30 23:00:00"}
+  forcing_time       : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
 
 ########################################################################
 formulation :
-  ngen_dir           : "/Users/peterlafollette/CIROH_project/ngen" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
+  ngen_dir           : "${NGEN_DIR}" # for instance, /Users/ajkhattak/codes/ngen_repo/ngen"
   # models             : "PET, CFE, T-route"
-  models             : "PET, LASAM, T-route"
-  # models             : "NOM, LASAM, T-route"
+  models             : "PET, CASAM, T-route"
+  # models             : "NOM, CASAM, T-route"
   # models             : "NOM, CFE, T-route"
 
   clean              : ['existing']

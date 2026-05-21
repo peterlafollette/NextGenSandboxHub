@@ -84,6 +84,9 @@ class Generate:
         if "LASAM" in self.formulation:
             ConfigGen.write_lasam_input_files()
 
+        if "CASAM" in self.formulation:
+            ConfigGen.write_casam_input_files()
+
         if "T-route" in self.formulation_in or "t-route" in self.formulation_in:
             ConfigGen.write_troute_input_files()
         

@@ -26,10 +26,10 @@ cd ${wkdir}
 #####################################################
 
 BUILD_NGEN=OFF
-BUILD_MODELS=OFF
-BUILD_TROUTE=ON
+BUILD_MODELS=ON
+BUILD_TROUTE=OFF
 
-ngen_dir=/Users/peterlafollette/CIROH_project/ngen
+ngen_dir=/users/4/plafolle/CIROH_project/ngen
 
 #####################################################
 
@@ -88,17 +88,23 @@ build_ngen()
 build_troute()
 {
     pushd $ngen_dir/extern/t-route
+
     git checkout master
     git pull
 
-    ##hot patch nc config to nf config
-    #sed -i 's/nc-config/nf-config/g' src/kernel/reservoir/makefile
+    ## Optional hot patch if you ever need it:
+    # sed -i 's/nc-config/nf-config/g' src/kernel/reservoir/makefile
 
     if [[ "$(uname)" == "Darwin" ]]; then
-	NETCDF=$(brew --prefix netcdf-fortran)/include LIBRARY_PATH=$(brew --prefix gcc)/lib/gcc/current/:$(brew --prefix)/lib:$LIBRARY_PATH FC=$FC CC=$CC F90=$FC ./compiler.sh no-e
+        # Mac: use brew to find NetCDF-Fortran
+        NETCDFINC=$(brew --prefix netcdf-fortran)/include
+        LIBRARY_PATH=$(brew --prefix gcc)/lib/gcc/current/:$(brew --prefix)/lib:$LIBRARY_PATH
+        FC=$FC CC=$CC F90=$FC ./compiler.sh no-e
     else
-	export NETCDF=${NETCDF_ROOT}/include
-	./compiler.sh no-e
+        # Linux/WSL: use nf-config to get the right NetCDF-Fortran include path
+        export NETCDFINC=$(nf-config --includedir)
+        echo "using NETCDFINC=$NETCDFINC"
+        ./compiler.sh no-e
     fi
 
     popd

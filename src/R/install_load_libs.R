@@ -20,21 +20,21 @@ suppressPackageStartupMessages({
 })
 
 if(!requireNamespace("hydrofabric3D", quietly=TRUE))
-  devtools::install_github("mikejohnson51/hydrofabric3D")
+  remotes::install_github("mikejohnson51/hydrofabric3D")
 
 if(!requireNamespace("hydrofabric", quietly=TRUE)) {
   #devtools::install_github("noaa-owp/hydrofabric", ref = 'b07c109', force = TRUE)
-  devtools::install_github("noaa-owp/hydrofabric", force = TRUE)
+  remotes::install_github("noaa-owp/hydrofabric", force = TRUE)
 }
 
 if(!requireNamespace("climateR", quietly=TRUE)) 
-  devtools::install_github("mikejohnson51/climateR", force = TRUE)
+  remotes::install_github("mikejohnson51/climateR", force = TRUE)
 
 if(!requireNamespace("zonal", quietly=TRUE))
-  devtools::install_github("mikejohnson51/zonal", force = TRUE)
+  remotes::install_github("mikejohnson51/zonal", force = TRUE)
 
 if(!requireNamespace("AOI", quietly=TRUE))
-  devtools::install_github("mikejohnson51/AOI")
+  remotes::install_github("mikejohnson51/AOI")
 
 if(!requireNamespace("hfsubsetR", quietly=TRUE))
   remotes::install_github("owp-spatial/hfsubsetR")

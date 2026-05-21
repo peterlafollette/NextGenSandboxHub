@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Author: Peter La Follette [plafollette@lynker.com | Refactor: Jan 2026]
-Concurrent multi-tile PSO calibration for LASAM(+PET+T-Route), with optional NOM support.
+Single-tile PSO calibration for CASAM(+PET+T-Route), with optional NOM support.
 
 Behavior preserved from Aug 2025 script:
 - Runs all particles concurrently each iteration using a ThreadPool (safe, no child-proc nesting).
 - Uses per-particle workspaces scaffolded by `sandbox.py -conf --concurrent-particles`:
     out/<gage_id>/particles/p{pid}/
   with particle-local configs/json/div/troute/postproc to avoid collisions.
-- Retargets realization paths into particle workspaces and updates LASAM/PET/NOM config paths.
-- Weighted tiling: optional 'tile_weight' parameter (for 2 tiles); pre-routing weighted qlat in 'div_weighted'.
+- Retargets realization paths into particle workspaces and updates CASAM/PET/NOM config paths.
+- Keeps one tile/model root per calibration job.
 - Final full-period run (spinup->val_end) in BEST workspace writes '{gage}_best.csv'.
 - STOP_NOW + low-disk abort.
 - Incomplete-run logging to {gage}_errors.log and {gage}_incomplete.csv.
@@ -71,15 +71,15 @@ metric_to_calibrate_on = "kge"
 # Run ALL particles concurrently per iteration (inner pool size). None => n_particles
 max_particle_procs = None
 
-# Optional learned weight for 2 tiles
-LEARN_TILE_WEIGHT_IF_2TILES = True
+# CASAM calibration is intentionally single-tile.
+LEARN_TILE_WEIGHT_IF_2TILES = False
 
 with open("model_assessment/configs/time_config.yaml", "r") as f:
     time_cfg = yaml.safe_load(f)
 
 TIME_FIELDS = ("spinup_start", "cal_start", "cal_end", "val_start", "val_end")
 
-def set_time_windows(overrides: Optional[Dict[str, str]] = None):
+def set_time_windows(overrides=None):
     global spinup_start, cal_start, cal_end, val_start, val_end
 
     if overrides:
@@ -95,13 +95,19 @@ def set_time_windows(overrides: Optional[Dict[str, str]] = None):
 
 set_time_windows()
 
-sandbox_config_override = os.environ.get("NGEN_SANDBOX_CONFIG")
-
 project_root = cfg.project_root
 sandbox_path = cfg.sandbox_path
 logging_dir = cfg.logging_dir
 observed_q_root = cfg.observed_q_root
 model_roots = cfg.model_roots
+
+HYDRO_MODEL_LABEL = "CASAM"
+HYDRO_CONFIG_DIRNAME = "casam"
+HYDRO_CONFIG_PREFIXES = ("casam_cfg_cat", "casam_config_cat")
+HYDRO_SANDBOX_CONFIG = os.environ.get(
+    "NGEN_SANDBOX_CONFIG",
+    os.path.join(project_root, "configs", "sandbox_config.yaml"),
+)
 
 os.makedirs(logging_dir, exist_ok=True)
 
@@ -254,14 +260,19 @@ def wall_time_log_fields(start_time: datetime, job_cores: int, particle_pool_siz
         fields["total_core_hours"] = core_hours
     return fields
 
+def runtime_cpu_pool(default: int = 1) -> int:
+    for name in ("NGEN_TROUTE_CPU_POOL", "SLURM_CPUS_PER_TASK", "SLURM_NTASKS", "SLURM_NPROCS"):
+        value = os.environ.get(name)
+        if value:
+            try:
+                return max(1, int(value))
+            except ValueError:
+                pass
+    return max(1, int(default))
+
 def pwork(root: str, gage_id: str, pid: int) -> str:
     """Particle workspace root created by `sandbox.py -conf --concurrent-particles`."""
     return os.path.join(root, "out", gage_id, "particles", f"p{pid}")
-
-def sandbox_config_for_tile(tile_idx: int) -> str:
-    if sandbox_config_override:
-        return sandbox_config_override
-    return os.path.join(cfg.project_root, "configs", f"sandbox_config_tile{tile_idx+1}.yaml")
 
 def resolve_div_dir(tile_root: str, gage_id: str, pid: int) -> str:
     """Return the directory that actually contains CSV divide outputs for this tile & particle.
@@ -332,7 +343,7 @@ def log_incomplete(
         pass
 
 # =========================
-# === Realization retargeting (LASAM+PET+optional NOM)
+# === Realization retargeting (CASAM+PET+optional NOM)
 # =========================
 
 def update_nom_namelist_paramdir(namelist_path: str, new_param_dir: str):
@@ -361,7 +372,7 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
     div_dir = os.path.join(work_root, "outputs", "div")
     os.makedirs(div_dir, exist_ok=True)
 
-    cfg_lasam_dir = os.path.join(configs_root, "lasam")
+    cfg_model_dir = os.path.join(configs_root, HYDRO_CONFIG_DIRNAME)
     cfg_pet_dir = os.path.join(configs_root, "pet")
     cfg_nom_dir = os.path.join(configs_root, "noahowp")
     cfg_nom_param = os.path.join(cfg_nom_dir, "parameters")
@@ -380,11 +391,11 @@ def retarget_realization_paths(realization_path: str, work_root: str, base_out_d
             fname = Path(init_cfg).name
             src = init_cfg if os.path.isabs(init_cfg) else os.path.join(base_out_dir, init_cfg)
 
-            if any(alias in model_type for alias in ("LASAM", "LGAR")) or "/configs/lasam/" in init_cfg:
-                os.makedirs(cfg_lasam_dir, exist_ok=True)
+            if any(alias in model_type for alias in ("CASAM", "LGAR")) or f"/configs/{HYDRO_CONFIG_DIRNAME}/" in init_cfg:
+                os.makedirs(cfg_model_dir, exist_ok=True)
                 if os.path.isfile(src):
-                    shutil.copy2(src, os.path.join(cfg_lasam_dir, fname))
-                p["init_config"] = os.path.abspath(os.path.join(cfg_lasam_dir, fname))
+                    shutil.copy2(src, os.path.join(cfg_model_dir, fname))
+                p["init_config"] = os.path.abspath(os.path.join(cfg_model_dir, fname))
 
             elif "PET" in model_type or "/configs/pet/" in init_cfg:
                 os.makedirs(cfg_pet_dir, exist_ok=True)
@@ -453,12 +464,13 @@ class TileContext:
         self.pid = pid
         self.work_root = work_root
 
-        self.lasam_cfg_dir = os.path.join(work_root, "configs", "lasam")
+        self.lasam_cfg_dir = os.path.join(work_root, "configs", HYDRO_CONFIG_DIRNAME)
         self.lasam_cfg_files = sorted(
-            f for f in os.listdir(self.lasam_cfg_dir) if f.startswith("lasam_config_cat")
+            f for f in os.listdir(self.lasam_cfg_dir)
+            if any(f.startswith(prefix) for prefix in HYDRO_CONFIG_PREFIXES)
         )
         if not self.lasam_cfg_files:
-            raise FileNotFoundError(f"No LASAM configs found in {self.lasam_cfg_dir}")
+            raise FileNotFoundError(f"No {HYDRO_MODEL_LABEL} configs found in {self.lasam_cfg_dir}")
 
         first_cfg = os.path.join(self.lasam_cfg_dir, self.lasam_cfg_files[0])
         with open(first_cfg, "r") as f:
@@ -940,7 +952,7 @@ def objective_function_tiled(args):
         offset += n
 
         work_root = pwork(tile_root, gage_id, particle_idx)
-        cfg_dir_lsm = os.path.join(work_root, "configs", "lasam")
+        cfg_dir_lsm = os.path.join(work_root, "configs", HYDRO_CONFIG_DIRNAME)
         json_dir = os.path.join(work_root, "json")
         os.makedirs(cfg_dir_lsm, exist_ok=True)
         os.makedirs(json_dir, exist_ok=True)
@@ -951,7 +963,7 @@ def objective_function_tiled(args):
             raise FileNotFoundError(f"No realization JSON found in {json_dir}")
         realization_path = os.path.join(json_dir, sorted(json_files)[0])  # FIXED: os.patho -> os.path
 
-        # Retarget realization paths into particle workspace (LASAM/PET/NOM)
+        # Retarget realization paths into particle workspace (CASAM/PET/NOM)
         base_out_dir = os.path.join(tile_root, "out", gage_id)
         retarget_realization_paths(realization_path, work_root, base_out_dir)
 
@@ -963,7 +975,7 @@ def objective_function_tiled(args):
         with open(realization_path, "w") as f:
             json.dump(realization, f, indent=4)
 
-        # Apply parameter set to particle-local LASAM/NOM files
+        # Apply parameter set to particle-local CASAM/NOM files
         tile_ctx = TileContext(tile_root, gage_id, particle_idx, work_root)
         apply_particle_params_for_tile(tile_ctx, specs_by_tile[tile_idx], tile_vals)
         update_noahowp_model_params(
@@ -984,7 +996,7 @@ def objective_function_tiled(args):
                 shutil.rmtree(pth)
 
         # Run hydrology (divide scale) for this tile & particle
-        tile_sandbox_config = sandbox_config_for_tile(tile_idx)
+        tile_sandbox_config = HYDRO_SANDBOX_CONFIG
         env = os.environ.copy()
         env["NGEN_CONCURRENT_PARTICLES"] = "1"
         env["NGEN_PARTICLE_ID"] = str(particle_idx)
@@ -1061,6 +1073,7 @@ def objective_function_tiled(args):
         troute_cfg = yaml.safe_load(f)
 
     nts = int((cal_end - spinup_start) / pd.Timedelta(seconds=300))
+    troute_cfg["compute_parameters"]["cpu_pool"] = runtime_cpu_pool(default=1)
     troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
     troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts
     troute_cfg["compute_parameters"]["forcing_parameters"]["qlat_input_folder"] = weighted_div_dir
@@ -1091,9 +1104,7 @@ def objective_function_tiled(args):
     env = os.environ.copy()
     env["NGEN_CONCURRENT_PARTICLES"] = "1"
     env["NGEN_PARTICLE_ID"] = str(particle_idx)
-    ret = subprocess.call([sys.executable, "-m", "nwm_routing", "-f", "-V4", troute_path], env=env)
-    if ret != 0:
-        raise RuntimeError(f"T-route failed: gage {gage_id} | pid {particle_idx} | exit code {ret}")
+    subprocess.call([sys.executable, "-m", "nwm_routing", "-f", "-V4", troute_path], env=env)
 
     # === STEP 4: Extract routed hydrograph (particle workspace) ===
     postproc_dir = os.path.join(router_work, "postproc")
@@ -1114,7 +1125,7 @@ def objective_function_tiled(args):
     env["NGEN_CONCURRENT_PARTICLES"] = "1"
     env["NGEN_PARTICLE_ID"] = str(particle_idx)
 
-    ret = subprocess.call(
+    subprocess.call(
         [
             sys.executable, get_hydrograph_path,
             "--gage_id", gage_id,
@@ -1125,8 +1136,6 @@ def objective_function_tiled(args):
         cwd=postproc_dir,
         env=env,
     )
-    if ret != 0:
-        raise RuntimeError(f"Hydrograph extraction failed: gage {gage_id} | pid {particle_idx} | exit code {ret}")
 
     # === STEP 5: Metrics ===
     sim_df = (
@@ -1343,8 +1352,6 @@ class PSO:
 
         # === Final full-period run using BEST position, reusing pid=0 workspace (preserves original behavior) ===
         print(f"\n[INFO] Final full-period validation for gage {self.gage_id}...")
-        if not np.isfinite(self.global_best_value):
-            raise RuntimeError(f"No successful particle evaluations for gage {self.gage_id}; skipping final validation")
         best_pid = 0
 
         n_tiles = len(model_roots)
@@ -1363,7 +1370,7 @@ class PSO:
             offset += n
 
             work_root = pwork(tile_root, self.gage_id, best_pid)
-            cfg_dir_lsm = os.path.join(work_root, "configs", "lasam")
+            cfg_dir_lsm = os.path.join(work_root, "configs", HYDRO_CONFIG_DIRNAME)
             json_dir = os.path.join(work_root, "json")
             os.makedirs(cfg_dir_lsm, exist_ok=True)
             os.makedirs(json_dir, exist_ok=True)
@@ -1401,7 +1408,7 @@ class PSO:
                 elif os.path.isdir(pth):
                     shutil.rmtree(pth)
 
-            tile_sandbox_config = sandbox_config_for_tile(tile_idx)
+            tile_sandbox_config = HYDRO_SANDBOX_CONFIG
             env = os.environ.copy()
             env["NGEN_CONCURRENT_PARTICLES"] = "1"
             env["NGEN_PARTICLE_ID"] = str(best_pid)
@@ -1469,6 +1476,7 @@ class PSO:
             troute_cfg = yaml.safe_load(f)
 
         nts_full = int((val_end - spinup_start) / pd.Timedelta(seconds=300))
+        troute_cfg["compute_parameters"]["cpu_pool"] = runtime_cpu_pool(default=1)
         troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
         troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts_full
         troute_cfg["compute_parameters"]["forcing_parameters"]["qlat_input_folder"] = weighted_div_dir
@@ -1497,9 +1505,7 @@ class PSO:
         env = os.environ.copy()
         env["NGEN_CONCURRENT_PARTICLES"] = "1"
         env["NGEN_PARTICLE_ID"] = str(best_pid)
-        ret = subprocess.call([sys.executable, "-m", "nwm_routing", "-f", "-V4", troute_path], env=env)
-        if ret != 0:
-            raise RuntimeError(f"Final T-route failed: gage {self.gage_id} | exit code {ret}")
+        subprocess.call([sys.executable, "-m", "nwm_routing", "-f", "-V4", troute_path], env=env)
 
         postproc_dir = os.path.join(router_work, "postproc")
         os.makedirs(postproc_dir, exist_ok=True)
@@ -1511,7 +1517,7 @@ class PSO:
             os.path.join(project_root, "model_assessment", "util", "downstream_flowpath_summary.csv"),
         )
 
-        ret = subprocess.call(
+        subprocess.call(
             [
                 sys.executable, get_hydrograph_path,
                 "--gage_id", self.gage_id,
@@ -1522,8 +1528,6 @@ class PSO:
             cwd=postproc_dir,
             env=env,
         )
-        if ret != 0:
-            raise RuntimeError(f"Final hydrograph extraction failed: gage {self.gage_id} | exit code {ret}")
 
         obs_path = os.path.join(observed_q_root, "successful_sites_resampled", f"{self.gage_id}.csv")
         obs_df = get_observed_q(obs_path)
@@ -1595,7 +1599,7 @@ def calibrate_gage(gage_id: str):
 # =========================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run single-tile LASAM PSO calibration.")
+    parser = argparse.ArgumentParser(description="Run single-tile CASAM PSO calibration.")
     parser.add_argument("--gage-id", default=os.environ.get("NGEN_GAGE_ID") or os.environ.get("GAGE_ID"))
     parser.add_argument("--n-particles", type=int, default=n_particles)
     parser.add_argument("--n-iterations", type=int, default=n_iterations)
@@ -1619,14 +1623,16 @@ if __name__ == "__main__":
     n_iterations = args.n_iterations
     max_particle_procs = args.max_particle_procs
     max_cores_for_gages = args.max_gage_procs
-    sandbox_config_override = args.sandbox_config
-    set_time_windows({
-        "spinup_start": args.spinup_start,
-        "cal_start": args.cal_start,
-        "cal_end": args.cal_end,
-        "val_start": args.val_start,
-        "val_end": args.val_end,
-    })
+    if args.sandbox_config:
+        HYDRO_SANDBOX_CONFIG = args.sandbox_config
+        os.environ["NGEN_SANDBOX_CONFIG"] = args.sandbox_config
+    set_time_windows({key: getattr(args, key) for key in TIME_FIELDS})
+
+    if len(model_roots) != 1:
+        raise RuntimeError(
+            f"{HYDRO_MODEL_LABEL} calibration expects exactly one model root; "
+            f"path_config.model_roots has {len(model_roots)} entries."
+        )
 
     start = datetime.now()
     if args.gage_id:

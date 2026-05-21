@@ -1,6 +1,77 @@
 ###############################################################
 # Author      : Peter La Follette [plafollette@lynker.com | May 2025]
-# updates some NOM parameters in the event that NOM is part of a formulation that is being calibrated 
+# updates some NOM parameters in the event that NOM is part of a formulation that is being calibrated
+
+import json
+
+NOM_PARAM_ALIASES = {
+    "CWP": ("CWP", "CWPVT"),
+    "CWPVT": ("CWPVT", "CWP"),
+}
+
+
+def get_nom_param_aliases(param: str):
+    return NOM_PARAM_ALIASES.get(param, (param,))
+
+
+def canonical_nom_param(table_param: str, requested_params):
+    for requested in requested_params:
+        if table_param in get_nom_param_aliases(requested):
+            return requested
+    return None
+
+
+def _matching_update_key(table_param: str, updated_params: dict):
+    if table_param in updated_params:
+        return table_param
+    return canonical_nom_param(table_param, updated_params.keys())
+
+
+def update_noahowp_model_params(realization_path: str, updated_params: dict) -> bool:
+    """
+    Update NoahOWP model_params in an ngen realization JSON.
+
+    This matches the upstream ngen-cal pathway for NoahOWP parameters such as
+    SCAMAX that are BMI-settable but are not present as editable rows in
+    MPTABLE.TBL.
+    """
+    if not updated_params:
+        return False
+
+    with open(realization_path, "r") as f:
+        realization = json.load(f)
+
+    normalized = {str(k): float(v) for k, v in updated_params.items()}
+
+    def _visit(node):
+        changed = False
+        if isinstance(node, dict):
+            params = node.get("params")
+            model_name = str(params.get("model_type_name", "")).upper() if isinstance(params, dict) else ""
+            if isinstance(params, dict) and "NOAHOWP" in model_name:
+                model_params = params.get("model_params")
+                if not isinstance(model_params, dict):
+                    model_params = {}
+                    params["model_params"] = model_params
+                model_params.update(normalized)
+                changed = True
+
+            for value in node.values():
+                changed = _visit(value) or changed
+
+        elif isinstance(node, list):
+            for value in node:
+                changed = _visit(value) or changed
+
+        return changed
+
+    changed = _visit(realization)
+    if changed:
+        with open(realization_path, "w") as f:
+            json.dump(realization, f, indent=4)
+
+    return changed
+
 
 def update_mptable(
     original_file: str,
@@ -28,7 +99,9 @@ def update_mptable(
             before_eq, after_eq = stripped.split('=', 1)
             param = before_eq.strip()
 
-            if param in updated_params:
+            update_key = _matching_update_key(param, updated_params)
+
+            if update_key is not None:
                 # Handle inline comment
                 comment = ''
                 if '!' in after_eq:
@@ -40,7 +113,7 @@ def update_mptable(
                 n_values = len(raw_values)
 
                 # Get new values: either use provided list or repeat a single value
-                new_values = updated_params[param]
+                new_values = updated_params[update_key]
                 if isinstance(new_values, (int, float)):
                     values_to_use = [new_values] * n_values
                 elif isinstance(new_values, list):
@@ -62,7 +135,8 @@ def update_mptable(
                 updated_lines.append(new_line + '\n')
 
                 if verbose:
-                    print(f"Line {idx + 1}: Updated {param} ({n_values} values)")
+                    alias_note = "" if update_key == param else f" from {update_key}"
+                    print(f"Line {idx + 1}: Updated {param}{alias_note} ({n_values} values)")
                 continue
 
         updated_lines.append(line)
@@ -89,10 +163,10 @@ if __name__ == "__main__":
         updated_params={
             "MFSNO":    [0.6],
             "RSURF_SNOW": [0.005],
-            "HVT":      [1],
-            "CWPVT":    [4],
+            "CWP":      [0.1],
             "VCMX25":   [65.0],
-            "MP":       [2]
+            "MP":       [2],
+            "RSURF_EXP": [3],
         },
         verbose=True
     )

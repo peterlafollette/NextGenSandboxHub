@@ -5,7 +5,80 @@
 import numpy as np
 import pandas as pd
 from hydroeval import kge
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
+
+try:
+    import xarray as xr
+    import neuralhydrology.evaluation.metrics as nhm
+    _NH_OK = True
+except Exception:
+    xr = None
+    nhm = None
+    _NH_OK = False
+
+def _compute_nh_mappe_fraction(sim: pd.Series, obs: pd.Series) -> float:
+    """
+    NeuralHydrology MAPPE (mean absolute percentage peak error).
+    Returns a fraction clipped to [0, 1], where:
+      0.0 = perfect peak reproduction
+      1.0 = >=100% peak error (treated as maximally bad)
+    """
+    if not _NH_OK:
+        return np.nan
+
+    sim, obs = sim.align(obs, join="inner")
+    m = sim.notna() & obs.notna()
+    sim = sim[m]
+    obs = obs[m]
+    if len(sim) == 0:
+        return np.nan
+
+    if not isinstance(sim.index, pd.DatetimeIndex):
+        sim = sim.copy()
+        sim.index = pd.to_datetime(sim.index)
+    if not isinstance(obs.index, pd.DatetimeIndex):
+        obs = obs.copy()
+        obs.index = pd.to_datetime(obs.index)
+
+    t = sim.index.values
+    obs_xr = xr.DataArray(obs.values, coords={"time": t}, dims=("time",))
+    sim_xr = xr.DataArray(sim.values, coords={"time": t}, dims=("time",))
+
+    try:
+        val = float(nhm.mean_absolute_percentage_peak_error(obs_xr, sim_xr))
+    except Exception:
+        return np.nan
+
+    return float(np.clip(val / 100, 0.0, 1.0))
+
+def _compute_top_flow_mape_fraction(sim: pd.Series,
+                                   obs: pd.Series,
+                                   top_frac: float = 0.10,
+                                   denom_floor: float = 1e-6) -> float:
+    """
+    Mean Absolute Percent Error over the top 'top_frac' of observed flows.
+    Returns a fraction (0..1) clipped, where 1.0 means >=100% average percent error.
+
+    This avoids tiny-peak issues by only evaluating high-flow timestamps.
+    """
+    sim, obs = sim.align(obs, join="inner")
+    m = sim.notna() & obs.notna()
+    sim = sim[m]
+    obs = obs[m]
+    if len(sim) == 0:
+        return np.nan
+
+    # Threshold based on observed distribution (top 10% => 90th percentile)
+    q = float(obs.quantile(1.0 - top_frac))
+    hi = obs >= q
+    if hi.sum() == 0:
+        return np.nan
+
+    # Percent error using a denominator floor for extra safety
+    denom = np.maximum(obs[hi].to_numpy(dtype=float), denom_floor)
+    pe = np.abs(sim[hi].to_numpy(dtype=float) - obs[hi].to_numpy(dtype=float)) / denom  # fraction
+    return float(np.clip(np.mean(pe), 0.0, 1.0))
+
 
 def compute_metrics(sim, obs, event_threshold=1e-2, start_time=None, end_time=None, peak_search_window_hours=10):
     """
@@ -37,7 +110,10 @@ def compute_metrics(sim, obs, event_threshold=1e-2, start_time=None, end_time=No
             "peak_flow_error_percent": 999.0,
             "event_kge": -10.0,
             "event_hours": 0,
-            "total_hours": 0
+            "total_hours": 0,
+            "mappe": 1.0,
+            "dist_to_ideal": np.nan,
+            "pareto_kge_mappe": 0.0
         }
 
     if start_time is not None and end_time is not None:
@@ -52,6 +128,22 @@ def compute_metrics(sim, obs, event_threshold=1e-2, start_time=None, end_time=No
 
     # === KGE ===
     kge_cal = kge(sim.values, obs.values)[0][0]
+
+    # === NH MAPPE (fraction, clipped <= 1) ===
+    # mappe = _compute_nh_mappe_fraction(sim, obs)
+    
+    # High-flow (top 10% by observed) percent error (fraction)
+    mappe = _compute_top_flow_mape_fraction(sim, obs, top_frac=0.10, denom_floor=1e-6)
+
+    # === Distance-to-ideal composite ===
+    # ideal point is (KGE=1, MAPPE=0)
+    # kge_clip = float(np.clip(kge_cal, -1.0, 1.0))
+    kge_eff = float(kge_cal)  # no clipping
+    mappe_eff = float(np.clip(mappe, 0.0, 1.0))
+
+    dist_to_ideal = np.sqrt((1.0 - kge_eff)**2 + (mappe_eff)**2)
+    pareto_kge_mappe = 1.0 / (1.0 + dist_to_ideal)   # bounded, smooth, no exp()
+
 
     # === log-KGE ===
     sim_log = np.log10(np.clip(sim.values, 1e-10, None))
@@ -121,7 +213,10 @@ def compute_metrics(sim, obs, event_threshold=1e-2, start_time=None, end_time=No
         "time_to_peak_error_hours": time_to_peak_error_hours,
         "event_kge": kge_event,
         "event_hours": event_hours,
-        "total_hours": total_hours
+        "total_hours": total_hours,
+        "mappe": mappe_eff,
+        "dist_to_ideal": dist_to_ideal,
+        "pareto_kge_mappe": pareto_kge_mappe
     }
 
 

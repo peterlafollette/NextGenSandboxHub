@@ -26,23 +26,24 @@ from src.python import helper
 from src.python import generate
 
 class Driver:
-    def __init__(self, infile, formulations_supported):
+    def __init__(self, infile, formulations_supported, gage_id=None):
         self.colors = helper.colors()
 
         self.sandbox_config = infile
         self.formulations_supported = formulations_supported
+        self.gage_id = str(gage_id).strip() if gage_id else None
         self.load_config()
         
     def load_config(self):
         with open(self.sandbox_config, 'r') as file:
             d = yaml.safe_load(file)
 
-        self.sandbox_dir = d["sandbox_dir"]
-        self.input_dir    = d["input_dir"]
-        self.output_dir   = Path(d["output_dir"])
+        self.sandbox_dir = os.path.expandvars(d["sandbox_dir"])
+        self.input_dir    = os.path.expandvars(d["input_dir"])
+        self.output_dir   = Path(os.path.expandvars(d["output_dir"]))
         
         dformul = d['formulation']
-        self.ngen_dir      = dformul["ngen_dir"]
+        self.ngen_dir      = os.path.expandvars(dformul["ngen_dir"])
         self.formulation   = dformul['models']
         self.clean         = self.process_clean_input_param(dformul.get('clean', "none"))
         self.verbosity     = dformul.get('verbosity', 0)
@@ -60,7 +61,7 @@ class Driver:
         forcing_start_yr    = pd.Timestamp(self.forcing_time['start_time']).year
         forcing_end_yr      = pd.Timestamp(self.forcing_time['end_time']).year + 1
         forcing_dir         = os.path.join(self.input_dir, "{*}", f'data/forcing/{forcing_start_yr}_to_{forcing_end_yr}')
-        self.forcing_dir    = dforcing.get("forcing_dir", forcing_dir)
+        self.forcing_dir    = os.path.expandvars(dforcing.get("forcing_dir", forcing_dir))
         self.forcing_format = dforcing.get('forcing_format', '.nc')
 
         self.is_netcdf_forcing = True
@@ -263,6 +264,11 @@ class Driver:
 
         all_dirs = glob.glob(os.path.join(self.input_dir, '*/'), recursive=True)
         self.gpkg_dirs = [Path(g) for g in all_dirs if os.path.exists(os.path.join(g, 'data')) and glob.glob(os.path.join(g, 'data', '*.gpkg'))]
+        if self.gage_id:
+            self.gpkg_dirs = [
+                g for g in self.gpkg_dirs
+                if any(self.gage_id in Path(f).stem for f in glob.glob(os.path.join(g, 'data', '*.gpkg')))
+            ]
         assert self.gpkg_dirs, f"No .gpkg files found in the data directory under {self.input_dir}."
 
         

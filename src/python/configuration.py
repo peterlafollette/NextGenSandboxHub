@@ -13,6 +13,7 @@ import copy
 import glob
 import json
 import subprocess
+import shutil
 import pandas as pd
 import geopandas as gpd
 import numpy as np
@@ -28,6 +29,16 @@ except:
     import schema
 
 os_name = platform.system()
+
+def runtime_cpu_pool(default=1):
+    for name in ("NGEN_TROUTE_CPU_POOL", "SLURM_CPUS_PER_TASK", "SLURM_NTASKS", "SLURM_NPROCS"):
+        value = os.environ.get(name)
+        if value:
+            try:
+                return max(1, int(value))
+            except ValueError:
+                pass
+    return max(1, int(default))
 
 class ConfigurationGenerator:
     def __init__(self, sandbox_dir, gpkg_file, forcing_dir, output_dir,
@@ -171,6 +182,7 @@ class ConfigurationGenerator:
 
         start_time = pd.Timestamp(self.simulation_time['start_time']).strftime("%Y%m%d%H%M")
         end_time = pd.Timestamp(self.simulation_time['end_time']).strftime("%Y%m%d%H%M")
+        flat_domain = 0.0
 
         for catID in self.catids:
             cat_name = 'cat-' + str(catID)
@@ -178,9 +190,8 @@ class ConfigurationGenerator:
             centroid_y = str(self.gdf['geometry'][cat_name].centroid.y)
             soil_type = str(self.gdf.loc[cat_name]['ISLTYP'])
             veg_type = str(self.gdf.loc[cat_name]['IVGTYP'])
-            aspect = str(self.gdf.loc[cat_name]['aspect_mean'])
-            slope  = self.gdf.loc[cat_name]['slope_mean']/100. # convert percent to ratio
-            slope_deg = math.degrees(math.atan(slope)) # convert radian to degrees
+            aspect = str(self.gdf.loc[cat_name]['aspect_mean'] * flat_domain)
+            terrain_slope = str(self.gdf.loc[cat_name]['slope_mean'] * flat_domain)
 
             fname_nom = f'noahowp_config_{cat_name}.input'
             nom_file = os.path.join(nom_dir, fname_nom)
@@ -202,7 +213,7 @@ class ConfigurationGenerator:
                     elif line.strip().startswith('lon'):
                         file.write(f'  lon      = {centroid_x} \n')
                     elif line.strip().startswith('terrain_slope'):
-                        file.write(f'  terrain_slope      = {slope_deg} \n')
+                        file.write(f'  terrain_slope      = {terrain_slope} \n')
                     elif line.strip().startswith('azimuth'):
                         file.write(f'  azimuth       = {aspect} \n')
                     elif line.strip().startswith('isltyp'):
@@ -255,7 +266,7 @@ class ConfigurationGenerator:
                         file.write(f'soil_params.smcmax={self.gdf["soil_smcmax"][cat_name]}[m/m]\n')
                     elif line.strip().startswith('soil_params.wltsmc'):
                         file.write(f'soil_params.wltsmc={self.gdf["soil_wltsmc"][cat_name]}[m/m]\n')
-                    elif line.strip().startswith('soil_params.refkdt'):
+                    elif line.strip().startswith('refkdt') or line.strip().startswith('soil_params.refkdt'):
                         file.write(f'refkdt={self.gdf["soil_refkdt"][cat_name]}\n')
                     elif line.strip().startswith('max_gw_storage'):
                         file.write(f'max_gw_storage={self.gdf["max_gw_storage"][cat_name]}[m]\n')
@@ -455,11 +466,15 @@ class ConfigurationGenerator:
         #create_directory(lasam_dir)
         self.create_directory(lasam_dir) ###new code
 
-        # lasam_params = os.path.join(self.ngen_dir,"extern/LGAR-C/LGAR-C/data/vG_params_stat_nom_ordered.dat")
-        lasam_params = os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", "vG_default_params_HYDRUS_frac.dat")
-        soil_param_file = lasam_params
-        str_sub ="cp -r "+ lasam_params + " %s"%lasam_dir
-        out=subprocess.call(str_sub,shell=True)
+        candidate_lasam_params = [
+            os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", "vG_default_params_HYDRUS_frac.dat"),
+            os.path.join(self.ngen_dir, "extern", "LGAR-C", "LGAR-C", "data", "vG_default_params_HYDRUS_frac.dat"),
+            os.path.join(self.ngen_dir, "extern", "CASAM", "CASAM", "data", "vG_params_stat_nom_ordered.dat"),
+        ]
+        lasam_params = next((p for p in candidate_lasam_params if os.path.isfile(p)), None)
+        soil_param_file = lasam_params or os.path.join(lasam_dir, "soil_placeholder.dat")
+        if lasam_params:
+            shutil.copy2(lasam_params, lasam_dir)
 
         sft_calib = "False"
         soil_z = "10.0,15.0,18.0,23.0,29.0,36.0,44.0,55.0,69.0,86.0,107.0,134.0,166.0,207.0,258.0,322.0,401.0,500.0,600.0"
@@ -467,9 +482,9 @@ class ConfigurationGenerator:
         lasam_params_base = [ ###original
             'verbosity=none',
             f'soil_params_file={soil_param_file}',
-            'layer_thickness=10,190.0[cm]',
+            'layer_thickness=150,200.0[cm]',
             'initial_psi=4000.0[cm]',
-            'timestep=3600[sec]',
+            'timestep=300[sec]',
             'endtime=1000000000.0[d]',
             'forcing_resolution=3600[sec]',
             'ponded_depth_max=0[cm]',
@@ -480,13 +495,15 @@ class ConfigurationGenerator:
             'field_capacity_psi=340.9[cm]',
             'adaptive_timestep=true',
             'giuh_ordinates=',
-            'a=0.0001',
+            'a=0.001',
             'b=3.0',
-            'frac_to_GW=0.25',
+            'frac_to_GW=0.4',
             'PET_affects_precip=false',
-            'spf_factor=0.9',
-            'allow_flux_caching=true'
-
+            'free_drainage_enabled=true',
+            'spf_factor=0.6',
+            'free_drainage_to_CR=true',
+            'allow_flux_caching=true',
+            'mbal_tol=1.0'
         ]
 
         # lasam_params_base = [ ###just for testing what if there is no GW
@@ -620,6 +637,95 @@ class ConfigurationGenerator:
             with open(soil_file, "w") as f:
                 f.writelines('\n'.join(soil_data))
 
+    def write_casam_input_files(self,
+                                sft_coupled=False):
+
+        casam_dir = os.path.join(self.output_dir, "configs/casam")
+        self.create_directory(casam_dir)
+
+        candidate_param_files = [
+            os.path.join(self.ngen_dir, "extern", "CASAM", "CASAM", "data", "vG_params_stat_nom_ordered.dat"),
+            os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", "vG_params_stat_nom_ordered.dat"),
+            os.path.join(self.ngen_dir, "extern", "LGAR-C", "LGAR-C", "data", "vG_params_stat_nom_ordered.dat"),
+        ]
+        casam_params = next((p for p in candidate_param_files if os.path.isfile(p)), None)
+        if casam_params is None:
+            raise FileNotFoundError(
+                "Could not find CASAM soil parameter file. Tried: "
+                + ", ".join(candidate_param_files)
+            )
+
+        out = subprocess.call(f"cp -r {casam_params} {casam_dir}", shell=True)
+        if out:
+            raise RuntimeError(f"Failed to copy CASAM parameter file: {casam_params}")
+
+        soil_param_file = os.path.join(casam_dir, os.path.basename(casam_params))
+
+        sft_calib = "False"
+        soil_z = "10.0,15.0,18.0,23.0,29.0,36.0,44.0,55.0,69.0,86.0,107.0,134.0,166.0,207.0,258.0,322.0,401.0,500.0,600.0"
+
+        casam_params_base = [
+            'verbosity=none',
+            f'soil_params_file={soil_param_file}',
+            'layer_thickness=200.0[cm]',
+            'initial_psi=2000.0[cm]',
+            'timestep=3600[sec]',
+            'endtime=1000000000.0[d]',
+            'forcing_resolution=3600[sec]',
+            'ponded_depth_max=0[cm]',
+            'use_closed_form_G=true',
+            'layer_soil_type=',
+            'max_valid_soil_types=25',
+            'wilting_point_psi=15495.0[cm]',
+            'field_capacity_psi=340.9[cm]',
+            'adaptive_timestep=true',
+            'giuh_ordinates=',
+            'a=0.0001',
+            'b=3.0',
+            'frac_to_GW=0.4',
+            'PET_affects_precip=false',
+            'spf_factor=0.6',
+            'free_drainage_enabled=true',
+            'allow_flux_caching=true',
+            'calib_params=true',
+            'log_mode=true'
+        ]
+
+        if sft_coupled:
+            casam_params_base.append('sft_coupled=true')
+            casam_params_base.append(f'soil_z={soil_z}[cm]')
+
+        if (sft_coupled and (sft_calib in ["true", "True"])):
+            casam_params_base.append('calib_params=true')
+
+        if self.ngen_cal_type in ['calibration', 'validation', 'restart']:
+            casam_params_base.append('calib_params=true')
+
+        soil_type_loc = casam_params_base.index("layer_soil_type=")
+        giuh_loc_id = casam_params_base.index("giuh_ordinates=")
+
+        for catID in self.catids:
+            cat_name = 'cat-' + str(catID)
+
+            casam_params_cat = casam_params_base.copy()
+            current_soil_type = int(str(self.gdf['ISLTYP'][cat_name]))
+            current_soil_type = min(12, max(1, current_soil_type))
+            casam_params_cat[soil_type_loc] += str(current_soil_type)
+
+            giuh_cat = json.loads(self.gdf['giuh'][cat_name])
+            giuh_cat = pd.DataFrame(giuh_cat, columns=['v', 'frequency'])
+            giuh_ordinates = ",".join(str(x) for x in np.array(giuh_cat["frequency"]))
+
+            if np.any(np.isnan(giuh_cat["frequency"])):
+                giuh_ordinates = str(1.0)
+
+            casam_params_cat[giuh_loc_id] += giuh_ordinates
+
+            fname_casam = f'casam_cfg_{cat_name}.txt'
+            casam_file = os.path.join(casam_dir, fname_casam)
+            with open(casam_file, "w") as f:
+                f.writelines('\n'.join(casam_params_cat))
+
 
     def write_pet_input_files(self):
         pet_dir = os.path.join(self.output_dir,"configs/pet")
@@ -734,7 +840,7 @@ class ConfigurationGenerator:
         d['compute_parameters']['forcing_parameters']['nts'] = int(diff_time / dt)
         d['compute_parameters']['forcing_parameters']['max_loop_size'] = 10000000
 
-        d['compute_parameters']['cpu_pool'] = 10
+        d['compute_parameters']['cpu_pool'] = runtime_cpu_pool(default=1)
 
         if self.ngen_cal_type in ['calibration', 'validation', 'calibvalid', 'restart']:
             stream_output = {
@@ -770,7 +876,10 @@ class ConfigurationGenerator:
         gage_id = os.path.splitext(basename)[0].replace("gage_", "")
 
         # Load downstream flowpath summary to get nexus and WBs
-        summary_path = Path(self.sandbox_dir) / "model_assessment" / "util" / "downstream_flowpath_summary.csv"
+        summary_path = Path(os.environ.get(
+            "DOWNSTREAM_FLOWPATH_SUMMARY",
+            Path(self.sandbox_dir) / "model_assessment" / "util" / "downstream_flowpath_summary.csv"
+        ))
         if not summary_path.exists():
             raise FileNotFoundError(
                 f"Required file not found: {summary_path}\n"

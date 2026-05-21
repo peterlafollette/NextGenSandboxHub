@@ -65,6 +65,11 @@ class RealizationGenerator:
         if 'LASAM' in self.formulation and not os.path.exists(lasam_dir):
             print(f"LASAM config files directory does not exist. {lasam_dir}")
             sys.exit(0)
+
+        casam_dir = os.path.join(self.output_dir, "configs", "casam")
+        if 'CASAM' in self.formulation and not os.path.exists(casam_dir):
+            print(f"CASAM config files directory does not exist. {casam_dir}")
+            sys.exit(0)
             
     
     def get_lib_files(self):
@@ -75,7 +80,7 @@ class RealizationGenerator:
         ext = "lib*.so" if "linux" in platform else "lib*.dylib"
 
         for m in models:
-            if m in ['SoilFreezeThaw', 'cfe', 'SoilMoistureProfiles', 'LASAM', 'LGAR-C', 'sloth', 'evapotranspiration', 'noah-owp-modular', 'topmodel']:
+            if m in ['SoilFreezeThaw', 'cfe', 'SoilMoistureProfiles', 'LASAM', 'CASAM', 'LGAR-C', 'sloth', 'evapotranspiration', 'noah-owp-modular', 'topmodel']:
                 path_m = os.path.join(os.path.join(extern_path, m), "cmake_build") if m in ['sloth', 'noah-owp-modular', 'topmodel', 'LGAR-C'] else os.path.join(os.path.join(extern_path, m, m), "cmake_build")
                 if os.path.exists(path_m):
                     exe_m = glob.glob(os.path.join(path_m, ext))
@@ -86,6 +91,13 @@ class RealizationGenerator:
                     else:
                         lib_files[m] = ""
         return lib_files
+
+    def first_available_lib(self, *names):
+        for name in names:
+            lib_file = self.lib_files.get(name)
+            if lib_file:
+                return lib_file
+        raise KeyError(f"None of these model libraries were found: {', '.join(names)}")
 
     def get_pet_block(self, var_names_map=False):
         block = {
@@ -257,7 +269,7 @@ class RealizationGenerator:
                 "model_type_name": "LGAR",
                 "main_output_variable": "precipitation_rate",
                 # "library_file": self.lib_files['LASAM'],
-                "library_file": self.lib_files['LASAM'] if "LASAM" in self.lib_files else self.lib_files['LGAR-C'],
+                "library_file": self.first_available_lib("LASAM", "LGAR-C", "CASAM"),
                 "init_config": os.path.join(self.config_dir, 'lasam/lasam_config_{{id}}.txt'),
                 "allow_exceed_end_time": True,
                 "uses_forcing_file": False,
@@ -268,6 +280,31 @@ class RealizationGenerator:
             }
         }
         
+        if "NOM" in self.formulation:
+            block["params"]["variables_names_map"]["precipitation_rate"] = "QINSUR"
+        if "PET" not in self.formulation:
+            block["params"]["variables_names_map"]["potential_evapotranspiration_rate"] = "EVAPOTRANS"
+
+        return block
+
+    def get_casam_block(self):
+        block = {
+            "name": "bmi_c++",
+            "params": {
+                "name": "bmi_c++",
+                "model_type_name": "LGAR",
+                "main_output_variable": "precipitation_rate",
+                "library_file": self.first_available_lib("CASAM", "LGAR-C", "LASAM"),
+                "init_config": os.path.join(self.config_dir, 'casam/casam_cfg_{{id}}.txt'),
+                "allow_exceed_end_time": True,
+                "uses_forcing_file": False,
+                "variables_names_map": {
+                    "precipitation_rate": "APCP_surface",
+                    "potential_evapotranspiration_rate": "water_potential_evaporation_flux"
+                }
+            }
+        }
+
         if "NOM" in self.formulation:
             block["params"]["variables_names_map"]["precipitation_rate"] = "QINSUR"
         if "PET" not in self.formulation:
@@ -296,7 +333,7 @@ class RealizationGenerator:
                 "ice_fraction_xinanjiang(1,double,1,node)": 0.0,
                 "soil_moisture_profile(1,double,1,node)": 0.0
             }
-        elif "LASAM" in self.formulation and not "SFT" in self.formulation:
+        elif ("LASAM" in self.formulation or "CASAM" in self.formulation) and not "SFT" in self.formulation:
             params = {
                 "soil_temperature_profile(1,double,K,node)": 275.15
             }
@@ -465,6 +502,16 @@ class RealizationGenerator:
             #                    "total_discharge", "infiltration"]
             # output_header_fields = ["rain_rate", "PET_rate", "actual_ET", "soil_storage", "direct_runoff", "giuh_runoff",
             #                        "deep_gw_to_channel_flux", "soil_to_gw_flux", "q_out", "infiltration"]
+            output_variables = ["total_discharge"]
+            output_header_fields = ["q_out"]
+        elif "NOM" in self.formulation and "CASAM" in self.formulation:
+            main_output_variable = "total_discharge"
+            modules = [self.get_sloth_block(), self.get_noah_owp_modular_block(), self.get_casam_block()]
+            output_variables = ["total_discharge"]
+            output_header_fields = ["q_out"]
+        elif "PET" in self.formulation and "CASAM" in self.formulation:
+            main_output_variable = "total_discharge"
+            modules = [self.get_sloth_block(), self.get_pet_block(), self.get_casam_block()]
             output_variables = ["total_discharge"]
             output_header_fields = ["q_out"]
         elif "NOM" in self.formulation and "TOPMODEL" in self.formulation:

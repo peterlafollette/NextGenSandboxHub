@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DDS calibration for LASAM using the same parameter-selection and particle-local
-execution path as pso_calibration_lasam.py.
+DDS calibration for CASAM using the same particle-local execution path as
+pso_calibration_casam.py.
 """
 
 import argparse
@@ -18,14 +18,14 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-import pso_calibration_lasam as lasam
+import pso_calibration_casam as casam
 
 np.random.seed(42)
 random.seed(42)
 
 n_iterations = 2
 max_cores_for_gages = 1
-metric_to_calibrate_on = lasam.metric_to_calibrate_on
+metric_to_calibrate_on = casam.metric_to_calibrate_on
 
 
 def reflect_bounds(x, low, high):
@@ -63,13 +63,13 @@ class DDS:
         self.sigma = sigma
 
     def evaluate(self, params, iteration):
-        weights = [1.0 / len(lasam.model_roots)] * len(lasam.model_roots)
-        return lasam._safe_objective((
+        weights = [1.0 / len(casam.model_roots)] * len(casam.model_roots)
+        return casam._safe_objective((
             params,
             0,
             self.gage_id,
-            lasam.model_roots,
-            lasam.observed_q_root,
+            casam.model_roots,
+            casam.observed_q_root,
             self.specs_by_tile,
             self.tile_counts,
             self.learn_tile_weight,
@@ -91,13 +91,13 @@ class DDS:
             "mappe_validation": val_metrics.get("mappe", np.nan),
             "status": status,
             "error": (err or "")[:240],
-            **lasam.wall_time_log_fields(start_time, job_cores, 1),
+            **casam.wall_time_log_fields(start_time, job_cores, 1),
         }
 
     def optimize(self):
         start_time = datetime.now()
-        job_cores = lasam.runtime_job_cores(default=1)
-        log_path = os.path.join(lasam.logging_dir, f"{self.gage_id}.csv")
+        job_cores = casam.runtime_job_cores(default=1)
+        log_path = os.path.join(casam.logging_dir, f"{self.gage_id}.csv")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         log_rows = []
         best_cal_metrics = {}
@@ -117,14 +117,10 @@ class DDS:
 
         num_params = len(self.bounds)
         for iteration in range(1, self.n_iterations + 1):
-            lasam.check_for_stop_signal_or_low_disk()
+            casam.check_for_stop_signal_or_low_disk()
             print(f"\n--- DDS Iteration {iteration} for gage {self.gage_id} ---")
 
-            if self.n_iterations <= 1:
-                probability = 1.0
-            else:
-                probability = 1.0 - np.log(iteration) / np.log(self.n_iterations)
-
+            probability = 1.0 if self.n_iterations <= 1 else 1.0 - np.log(iteration) / np.log(self.n_iterations)
             perturb_mask = np.random.rand(num_params) < probability
             if not np.any(perturb_mask):
                 perturb_mask[np.random.randint(0, num_params)] = True
@@ -152,8 +148,8 @@ class DDS:
         if not np.isfinite(self.best_value):
             raise RuntimeError(f"No successful DDS evaluations for gage {self.gage_id}; skipping final validation")
 
-        print(f"\n[INFO] Running final LASAM validation for DDS best parameters: {self.gage_id}")
-        final_runner = lasam.PSO(
+        print(f"\n[INFO] Running final CASAM validation for DDS best parameters: {self.gage_id}")
+        final_runner = casam.PSO(
             n_particles=1,
             bounds=self.bounds,
             n_iterations=0,
@@ -176,7 +172,7 @@ class DDS:
             df = pd.read_csv(log_path)
             if len(df) > 0:
                 final_idx = df.index[-1]
-                fields = lasam.wall_time_log_fields(start_time, job_cores, 1, final=True)
+                fields = casam.wall_time_log_fields(start_time, job_cores, 1, final=True)
                 for key, value in fields.items():
                     df.loc[final_idx, key] = value
                 for col in ("status", "error"):
@@ -193,14 +189,14 @@ class DDS:
 
 def calibrate_gage_dds(gage_id):
     try:
-        specs_by_tile, tile_counts, bounds, init_params, names = lasam.flatten_specs_for_all_tiles(
+        specs_by_tile, tile_counts, bounds, init_params, names = casam.flatten_specs_for_all_tiles(
             gage_id,
-            lasam.model_roots,
+            casam.model_roots,
         )
 
         learn_tile_weight = (
-            len(lasam.model_roots) == 2
-            and getattr(lasam, "LEARN_TILE_WEIGHT_IF_2TILES", False)
+            len(casam.model_roots) == 2
+            and getattr(casam, "LEARN_TILE_WEIGHT_IF_2TILES", False)
         )
         if learn_tile_weight:
             init_params.append(0.8)
@@ -225,7 +221,7 @@ def calibrate_gage_dds(gage_id):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run LASAM DDS calibration.")
+    parser = argparse.ArgumentParser(description="Run CASAM DDS calibration.")
     parser.add_argument("--gage-id", default=os.environ.get("NGEN_GAGE_ID") or os.environ.get("GAGE_ID"))
     parser.add_argument("--n-iterations", type=int, default=n_iterations)
     parser.add_argument("--max-gage-procs", type=int, default=max_cores_for_gages)
@@ -243,8 +239,10 @@ if __name__ == "__main__":
 
     n_iterations = args.n_iterations
     max_cores_for_gages = args.max_gage_procs
-    lasam.sandbox_config_override = args.sandbox_config
-    lasam.set_time_windows({
+    if args.sandbox_config:
+        casam.HYDRO_SANDBOX_CONFIG = args.sandbox_config
+        os.environ["NGEN_SANDBOX_CONFIG"] = args.sandbox_config
+    casam.set_time_windows({
         "spinup_start": args.spinup_start,
         "cal_start": args.cal_start,
         "cal_end": args.cal_end,
@@ -256,7 +254,7 @@ if __name__ == "__main__":
     if args.gage_id:
         gage_list = [str(args.gage_id).strip()]
     else:
-        gage_list = pd.read_csv(lasam.cfg.gages_file, dtype={"gage_id": str})["gage_id"].tolist()
+        gage_list = pd.read_csv(casam.cfg.gages_file, dtype={"gage_id": str})["gage_id"].tolist()
 
     if len(gage_list) == 1:
         calibrate_gage_dds(gage_list[0])

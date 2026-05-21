@@ -5,6 +5,7 @@
 # only supports 1 tile
 
 import os
+import argparse
 import pandas as pd
 import numpy as np
 import random
@@ -17,8 +18,9 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from model_assessment.configs import path_config as cfg
 from model_assessment.util.metrics import compute_metrics
-from model_assessment.util.update_NOM import update_mptable
+from model_assessment.util.update_NOM import update_mptable, update_noahowp_model_params
 import shutil 
+import pso_calibration_cfe as cfe_runtime
 
 project_root = cfg.project_root
 sandbox_path = cfg.sandbox_path
@@ -37,11 +39,14 @@ from pso_calibration_cfe import (
     nom_param_names,
     nom_param_bounds,
     extract_initial_nom_params,
-    extract_tile_params
+    extract_tile_params,
+    pwork,
+    resolve_div_dir,
+    retarget_realization_paths,
+    sandbox_config_for_tile,
+    runtime_job_cores,
+    wall_time_log_fields,
 )
-
-print("param names:")
-print(param_names)
 
 with open("model_assessment/configs/time_config.yaml", "r") as f:
     time_cfg = yaml.safe_load(f)
@@ -56,8 +61,18 @@ np.random.seed(42)
 random.seed(42)
 
 n_iterations = 2
-max_cores_for_gages = 2
+max_cores_for_gages = 1
 metric_to_calibrate_on = "kge"
+
+def set_local_time_windows(overrides=None):
+    cfe_runtime.set_time_windows(overrides)
+    global time_cfg, cal_start, cal_end, val_start, val_end, spinup_start
+    time_cfg = cfe_runtime.time_cfg
+    cal_start = cfe_runtime.cal_start
+    cal_end = cfe_runtime.cal_end
+    val_start = cfe_runtime.val_start
+    val_end = cfe_runtime.val_end
+    spinup_start = cfe_runtime.spinup_start
 
 def clear_terminal():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -95,10 +110,11 @@ class DDS:
         log_rows = []
         num_params = len(self.bounds)
         start_time = datetime.now()
+        job_cores = runtime_job_cores(default=1)
 
         print(f"\n--- Initial evaluation for gage {self.gage_id} ---")
 
-        obj_val, val_metrics, cal_metrics = objective_function_tiled((
+        status, err, obj_val, val_metrics, cal_metrics = cfe_runtime._safe_objective((
             self.best_position, 0, self.gage_id,
             self.model_roots,
             cfg.observed_q_root,
@@ -107,9 +123,13 @@ class DDS:
             [1.0 / self.n_tiles] * self.n_tiles
         ))
 
-        self.best_value = obj_val
-        best_val_metrics = val_metrics
-        best_cal_metrics = cal_metrics
+        if status == "OK":
+            self.best_value = obj_val
+            best_val_metrics = val_metrics
+            best_cal_metrics = cal_metrics
+        else:
+            best_val_metrics = {}
+            best_cal_metrics = {}
 
         row = {
             "iteration": 0,
@@ -117,15 +137,19 @@ class DDS:
             **dict(zip(self.param_names, self.best_position)),
             f"{self.metric}_calibration": cal_metrics.get(self.metric, np.nan),
             f"{self.metric}_validation": val_metrics.get(self.metric, np.nan),
+            "status": status,
+            "error": (err or "")[:240],
+            **wall_time_log_fields(start_time, job_cores, 1),
         }
         log_rows.append(row)
+        pd.DataFrame(log_rows).to_csv(log_path, index=False)
 
         for iteration in range(1, self.n_iterations + 1):
             clear_terminal()
             check_for_stop_signal_or_low_disk()
             print(f"\n--- DDS Iteration {iteration} for gage {self.gage_id} ---")
 
-            p = 1 - np.log(iteration) / np.log(self.n_iterations)
+            p = 1.0 if self.n_iterations <= 1 else 1 - np.log(iteration) / np.log(self.n_iterations)
             perturb_mask = np.random.rand(num_params) < p
             if not np.any(perturb_mask):
                 perturb_mask[np.random.randint(0, num_params)] = True
@@ -138,7 +162,7 @@ class DDS:
                     candidate[i] += perturb
                     candidate[i] = max(low, min(high, candidate[i]))
 
-            obj_val, val_metrics, cal_metrics = objective_function_tiled((
+            status, err, obj_val, val_metrics, cal_metrics = cfe_runtime._safe_objective((
                 candidate, 0, self.gage_id,
                 self.model_roots,
                 cfg.observed_q_root,
@@ -147,7 +171,7 @@ class DDS:
                 [1.0 / self.n_tiles] * self.n_tiles
             ))
 
-            if obj_val < self.best_value:
+            if status == "OK" and obj_val < self.best_value:
                 self.best_value = obj_val
                 self.best_position = candidate
                 best_val_metrics = val_metrics
@@ -159,13 +183,19 @@ class DDS:
                 **dict(zip(self.param_names, candidate)),
                 f"{self.metric}_calibration": cal_metrics.get(self.metric, np.nan),
                 f"{self.metric}_validation": val_metrics.get(self.metric, np.nan),
+                "status": status,
+                "error": (err or "")[:240],
+                **wall_time_log_fields(start_time, job_cores, 1),
             }
             log_rows.append(row)
+            pd.DataFrame(log_rows).to_csv(log_path, index=False)
 
         # === Final full-period run ===
         print(f"\n[INFO] Running final weighted-routing validation for {self.gage_id}...")
+        if not np.isfinite(self.best_value):
+            raise RuntimeError(f"No successful DDS evaluations for gage {self.gage_id}; skipping final validation")
 
-        # Handle weights
+        best_pid = 0
         if self.n_tiles == 2:
             tile_weight = self.best_position[-1]
             weights = [tile_weight, 1.0 - tile_weight]
@@ -174,100 +204,182 @@ class DDS:
             weights = [1.0 / self.n_tiles] * self.n_tiles
             param_vector = self.best_position
 
-        # === STEP 1: Run hydrology for each tile ===
+        # === STEP 1: Run hydrology for each tile in the BEST particle workspace ===
         for tile_idx, tile_root in enumerate(self.model_roots):
             tile_params = extract_tile_params(param_vector, tile_idx, self.n_tiles)
-
-            # Strip tile suffixes for config updates
-            names_for_tile = self.param_names[tile_idx * len(tile_params): (tile_idx + 1) * len(tile_params)]
-            base_names = [n.split("_tile")[0] for n in names_for_tile if n != "tile_weight"]
-
-            # Transform log-scale params and regenerate configs
+            base_names = param_names.copy()
+            if self.include_nom:
+                base_names += nom_param_names
             true_best = transform_params(tile_params, base_names)
-            config_dir = os.path.join(tile_root, f"out/{self.gage_id}/configs/cfe")
+
+            work_root = pwork(tile_root, self.gage_id, best_pid)
+            config_dir = os.path.join(work_root, "configs", "cfe")
+            json_dir = os.path.join(work_root, "json")
+            div_dir = os.path.join(work_root, "outputs", "div")
+            os.makedirs(config_dir, exist_ok=True)
+            os.makedirs(json_dir, exist_ok=True)
+            os.makedirs(div_dir, exist_ok=True)
+
+            json_files = [f for f in os.listdir(json_dir) if f.endswith(".json")]
+            if not json_files:
+                raise FileNotFoundError(f"No realization JSON found in {json_dir}")
+            realization_path = os.path.join(json_dir, sorted(json_files)[0])
+            retarget_realization_paths(
+                realization_path=realization_path,
+                work_root=work_root,
+                base_out_dir=os.path.join(tile_root, "out", self.gage_id),
+            )
+
             regenerate_cfe_config(config_dir, true_best, base_names)
 
-            # Update NOM params if present
+            nom_param_dict = {}
             if self.include_nom and self.nom_file_paths[tile_idx]:
-                nom_vals = tile_params[-6:]
+                nom_vals = tile_params[-len(nom_param_names):]
+                nom_param_dict = dict(zip(nom_param_names, nom_vals))
+                nom_tbl = os.path.join(work_root, "configs", "noahowp", "parameters", "MPTABLE.TBL")
                 update_mptable(
-                    original_file=self.nom_file_paths[tile_idx],
-                    output_file=self.nom_file_paths[tile_idx],
-                    updated_params=dict(zip(nom_param_names, nom_vals))
+                    original_file=nom_tbl,
+                    output_file=nom_tbl,
+                    updated_params=nom_param_dict,
+                    verbose=True,
                 )
 
-            # Update realization JSON for full spinup+validation
-            json_dir = os.path.join(tile_root, "out", self.gage_id, "json")
-            realization_file = [f for f in os.listdir(json_dir) if f.endswith(".json")][0]
-            realization_path = os.path.join(json_dir, realization_file)
             with open(realization_path, "r") as f:
                 realization = json.load(f)
             realization["time"]["start_time"] = time_cfg["spinup_start"]
             realization["time"]["end_time"] = time_cfg["val_end"]
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
+            update_noahowp_model_params(realization_path, nom_param_dict)
 
-            # Run hydrology only
-            tile_sandbox_config = os.path.join(cfg.project_root, "configs", f"sandbox_config_tile{tile_idx+1}.yaml")
-            subprocess.call(
-                ["python", sandbox_path, "-i", tile_sandbox_config, "-run", "--gage_id", self.gage_id],
-                cwd=tile_root
+            for item in list(os.listdir(div_dir)):
+                if item.startswith("."):
+                    continue
+                pth = os.path.join(div_dir, item)
+                if os.path.isfile(pth) or os.path.islink(pth):
+                    os.remove(pth)
+                elif os.path.isdir(pth):
+                    shutil.rmtree(pth)
+
+            env = os.environ.copy()
+            env["NGEN_CONCURRENT_PARTICLES"] = "1"
+            env["NGEN_PARTICLE_ID"] = str(best_pid)
+            env["NGEN_REALIZATION_PATH"] = realization_path
+            ret = subprocess.call(
+                [sys.executable, sandbox_path, "-i", sandbox_config_for_tile(tile_idx), "-run", "--gage_id", self.gage_id],
+                cwd=tile_root,
+                env=env,
             )
+            if ret != 0:
+                raise RuntimeError(f"Final hydrology failed for gage {self.gage_id} | tile {tile_idx} | exit code {ret}")
 
-        # === STEP 2: Weighted averaging of divide outputs ===
+        # === STEP 2: Weighted averaging of divide outputs in BEST workspace ===
+        router_tile_root = self.model_roots[0]
+        router_work = pwork(router_tile_root, self.gage_id, best_pid)
+        weighted_div_dir = os.path.join(router_work, "outputs", "div_weighted")
+        if os.path.exists(weighted_div_dir):
+            shutil.rmtree(weighted_div_dir)
+        os.makedirs(weighted_div_dir, exist_ok=True)
+
+        src_div_dirs = [resolve_div_dir(root, self.gage_id, best_pid) for root in self.model_roots]
+        files = []
+        for div_dir in src_div_dirs:
+            if os.path.isdir(div_dir):
+                candidates = [
+                    f for f in os.listdir(div_dir)
+                    if (f.startswith("cat-") or f.startswith("nex-")) and f.endswith(".csv")
+                ]
+                if candidates:
+                    files = candidates
+                    break
+        if not files:
+            raise RuntimeError(f"No divide CSVs found for final routing for gage {self.gage_id}")
+
         if self.n_tiles == 1:
-            weighted_div_dir = os.path.join(self.model_roots[0], "out", self.gage_id, "outputs", "div")
+            for fname in files:
+                shutil.copy2(os.path.join(src_div_dirs[0], fname), os.path.join(weighted_div_dir, fname))
         else:
-            weighted_div_dir = os.path.join(self.model_roots[0], "out", self.gage_id, "outputs", "div_weighted")
-            if os.path.exists(weighted_div_dir):
-                shutil.rmtree(weighted_div_dir)
-            os.makedirs(weighted_div_dir, exist_ok=True)
-
-            div_dirs = [os.path.join(root, "out", self.gage_id, "outputs", "div") for root in self.model_roots]
-            files = [f for f in os.listdir(div_dirs[0]) if (f.startswith("cat-") or f.startswith("nex-")) and f.endswith(".csv")]
-
             for fname in files:
                 dfs = []
-                for w, div_dir in zip(weights, div_dirs):
+                df_ref = None
+                for w, div_dir in zip(weights, src_div_dirs):
                     fpath = os.path.join(div_dir, fname)
+                    if not os.path.exists(fpath):
+                        continue
                     df = pd.read_csv(fpath, header=None if fname.startswith("nex-") else 0)
                     if fname.startswith("nex-"):
                         df.columns = ["Time Step", "Time", "q_out"]
+                    if df_ref is None:
+                        df_ref = df.copy()
                     dfs.append(df["q_out"] * w)
-                combined = sum(dfs)
-                out_df = df.copy()
-                out_df["q_out"] = combined
-                out_df["Time"] = pd.to_datetime(out_df["Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-                out_df.to_csv(os.path.join(weighted_div_dir, fname), index=False, header=not fname.startswith("nex-"))
+                if dfs:
+                    out_df = df_ref.copy()
+                    out_df["q_out"] = sum(dfs)
+                    out_df["Time"] = pd.to_datetime(out_df["Time"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+                    out_df.to_csv(
+                        os.path.join(weighted_div_dir, fname),
+                        index=False,
+                        header=not fname.startswith("nex-"),
+                    )
 
-        # === STEP 3: Run routing once ===
-        troute_path = os.path.join(self.model_roots[0], "out", self.gage_id, "configs", "troute_config.yaml")
+        # === STEP 3: Run routing once in BEST workspace ===
+        troute_path = os.path.join(router_work, "configs", "troute_config.yaml")
         with open(troute_path, "r") as f:
             troute_cfg = yaml.safe_load(f)
         nts_full = int((val_end - spinup_start) / pd.Timedelta(seconds=300))
         troute_cfg["compute_parameters"]["restart_parameters"]["start_datetime"] = spinup_start.strftime("%Y-%m-%d_%H:%M:%S")
         troute_cfg["compute_parameters"]["forcing_parameters"]["nts"] = nts_full
         troute_cfg["compute_parameters"]["forcing_parameters"]["qlat_input_folder"] = weighted_div_dir
-        yaml.safe_dump(troute_cfg, open(troute_path, "w"))
 
-        # Clear old routing outputs
-        troute_dir = os.path.join(self.model_roots[0], "out", self.gage_id, "troute")
-        if os.path.isdir(troute_dir):
-            for fname in os.listdir(troute_dir):
-                if fname.endswith(".nc"):
-                    os.remove(os.path.join(troute_dir, fname))
+        troute_dir = os.path.join(router_work, "troute")
+        os.makedirs(troute_dir, exist_ok=True)
+        op = troute_cfg.setdefault("output_parameters", {})
+        so = op.setdefault("stream_output", {})
+        so["stream_output_directory"] = troute_dir
+        mask_path = so.get("mask_output")
+        if not (isinstance(mask_path, str) and os.path.isfile(mask_path)):
+            orig_mask = os.path.join(router_tile_root, "out", self.gage_id, "configs", "mask_output.yaml")
+            if os.path.isfile(orig_mask):
+                so["mask_output"] = orig_mask
+            else:
+                so.pop("mask_output", None)
 
-        # Run routing
-        subprocess.call(["python3", "-m", "nwm_routing", "-f", "-V4", troute_path])
+        with open(troute_path, "w") as f:
+            yaml.safe_dump(troute_cfg, f)
+
+        for fname in os.listdir(troute_dir):
+            if fname.endswith((".nc", ".csv", ".parquet")):
+                os.remove(os.path.join(troute_dir, fname))
+
+        env = os.environ.copy()
+        env["NGEN_CONCURRENT_PARTICLES"] = "1"
+        env["NGEN_PARTICLE_ID"] = str(best_pid)
+        ret = subprocess.call([sys.executable, "-m", "nwm_routing", "-f", "-V4", troute_path], env=env)
+        if ret != 0:
+            raise RuntimeError(f"Final T-route failed for gage {self.gage_id} | exit code {ret}")
 
         # === STEP 4: Extract final routed hydrograph ===
-        postproc_dir = os.path.join(self.model_roots[0], "postproc")
+        postproc_dir = os.path.join(router_work, "postproc")
+        os.makedirs(postproc_dir, exist_ok=True)
         final_output_path = os.path.join(postproc_dir, f"{self.gage_id}_best.csv")
         get_hydrograph_path = os.path.join(cfg.project_root, "model_assessment", "util", "get_hydrograph.py")
-        subprocess.call(
-            ["python", get_hydrograph_path, "--gage_id", self.gage_id, "--output", final_output_path, "--base_dir", self.model_roots[0]],
-            cwd=postproc_dir
+        summary_csv = os.environ.get(
+            "DOWNSTREAM_FLOWPATH_SUMMARY",
+            os.path.join(cfg.project_root, "model_assessment", "util", "downstream_flowpath_summary.csv"),
         )
+        ret = subprocess.call(
+            [
+                sys.executable, get_hydrograph_path,
+                "--gage_id", self.gage_id,
+                "--output", final_output_path,
+                "--troute_dir", troute_dir,
+                "--summary", summary_csv,
+            ],
+            cwd=postproc_dir,
+            env=env,
+        )
+        if ret != 0:
+            raise RuntimeError(f"Final hydrograph extraction failed for gage {self.gage_id} | exit code {ret}")
 
         # === STEP 5: Compute metrics and log ===
         obs_df = pd.read_csv(self.observed_path, parse_dates=["value_time"]).set_index("value_time")["flow_m3_per_s"]
@@ -282,6 +394,9 @@ class DDS:
             **dict(zip(self.param_names, self.best_position)),
             f"{self.metric}_calibration": best_cal_metrics.get(self.metric, np.nan),
             f"{self.metric}_validation": val_metrics_final.get(self.metric, np.nan),
+            "status": "OK",
+            "error": "",
+            **wall_time_log_fields(start_time, job_cores, 1, final=True),
         }
         log_rows.append(summary_row)
         pd.DataFrame(log_rows).to_csv(log_path, index=False)
@@ -295,16 +410,17 @@ def calibrate_gage_dds(gage_id):
     all_init, all_bounds, include_nom_flags, nom_file_paths, names = [], [], [], [], []
 
     for tile_idx, root in enumerate(cfg.model_roots):
-        config_dir = os.path.join(root, f"out/{gage_id}/configs/cfe")
+        work_root = pwork(root, gage_id, 0)
+        config_dir = os.path.join(work_root, "configs", "cfe")
         config_file = sorted(f for f in os.listdir(config_dir) if f.startswith("cfe_config_cat"))[0]
         config_path = os.path.join(config_dir, config_file)
 
         init = extract_initial_cfe_params(config_path)
         bounds = param_bounds.copy()
 
-        include_nom = os.path.isdir(os.path.join(root, f"out/{gage_id}/configs/noahowp"))
+        include_nom = os.path.isdir(os.path.join(work_root, "configs", "noahowp"))
         if include_nom:
-            nom_path = os.path.join(root, f"out/{gage_id}/configs/noahowp/parameters/MPTABLE.TBL")
+            nom_path = os.path.join(work_root, "configs", "noahowp", "parameters", "MPTABLE.TBL")
             init += extract_initial_nom_params(nom_path)
             bounds += nom_param_bounds
             nom_file_paths.append(nom_path)
@@ -341,11 +457,48 @@ def calibrate_gage_dds(gage_id):
     dds.optimize()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run CFE DDS calibration.")
+    parser.add_argument("--gage-id", default=os.environ.get("NGEN_GAGE_ID") or os.environ.get("GAGE_ID"))
+    parser.add_argument("--n-iterations", type=int, default=n_iterations)
+    parser.add_argument("--max-gage-procs", type=int, default=max_cores_for_gages)
+    parser.add_argument("--sandbox-config", default=os.environ.get("NGEN_SANDBOX_CONFIG"))
+    parser.add_argument("--spinup-start", default=os.environ.get("NGEN_SPINUP_START"))
+    parser.add_argument("--cal-start", default=os.environ.get("NGEN_CAL_START"))
+    parser.add_argument("--cal-end", default=os.environ.get("NGEN_CAL_END"))
+    parser.add_argument("--val-start", default=os.environ.get("NGEN_VAL_START"))
+    parser.add_argument("--val-end", default=os.environ.get("NGEN_VAL_END"))
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    gage_list = pd.read_csv(cfg.gages_file, dtype={"gage_id": str})["gage_id"].tolist()
-    ctx = multiprocessing.get_context("spawn")
-    with ctx.Pool(processes=max_cores_for_gages) as pool:
-        pool.map(calibrate_gage_dds, gage_list)
+    args = parse_args()
+
+    n_iterations = args.n_iterations
+    max_cores_for_gages = args.max_gage_procs
+    cfe_runtime.sandbox_config_override = args.sandbox_config
+    set_local_time_windows({
+        "spinup_start": args.spinup_start,
+        "cal_start": args.cal_start,
+        "cal_end": args.cal_end,
+        "val_start": args.val_start,
+        "val_end": args.val_end,
+    })
+
+    start = datetime.now()
+    if args.gage_id:
+        gage_list = [str(args.gage_id).strip()]
+    else:
+        gage_list = pd.read_csv(cfg.gages_file, dtype={"gage_id": str})["gage_id"].tolist()
+
+    if len(gage_list) == 1:
+        calibrate_gage_dds(gage_list[0])
+    else:
+        ctx = multiprocessing.get_context("spawn")
+        with ctx.Pool(processes=max_cores_for_gages) as pool:
+            pool.map(calibrate_gage_dds, gage_list)
+
+    print(f"\n=== Total DDS wall time: {datetime.now() - start} ===")
 
 
 
@@ -914,5 +1067,3 @@ if __name__ == "__main__":
 #     ctx = multiprocessing.get_context("spawn")
 #     with ctx.Pool(processes=max_cores_for_gages) as pool:
 #         pool.map(calibrate_gage_dds, gage_list)
-
-
