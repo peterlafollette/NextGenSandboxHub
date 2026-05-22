@@ -490,7 +490,7 @@ class ConfigurationGenerator:
             'ponded_depth_max=0[cm]',
             'use_closed_form_G=true',
             'layer_soil_type=',
-            'max_valid_soil_types=25',
+            'max_valid_soil_types=12',
             'wilting_point_psi=15495.0[cm]',
             'field_capacity_psi=340.9[cm]',
             'lateral_flow_psi_threshold=500.0',
@@ -671,13 +671,13 @@ class ConfigurationGenerator:
             f'soil_params_file={soil_param_file}',
             'layer_thickness=200.0[cm]',
             'initial_psi=2000.0[cm]',
-            'timestep=3600[sec]',
+            'timestep=300[sec]',
             'endtime=1000000000.0[d]',
             'forcing_resolution=3600[sec]',
             'ponded_depth_max=0[cm]',
             'use_closed_form_G=true',
             'layer_soil_type=',
-            'max_valid_soil_types=25',
+            'max_valid_soil_types=12',
             'wilting_point_psi=15495.0[cm]',
             'field_capacity_psi=340.9[cm]',
             'adaptive_timestep=true',
@@ -690,20 +690,12 @@ class ConfigurationGenerator:
             'PET_affects_precip=false',
             'spf_factor=0.6',
             'free_drainage_enabled=true',
-            'allow_flux_caching=true',
-            'calib_params=true',
-            'log_mode=true'
+            'allow_flux_caching=true'
         ]
 
         if sft_coupled:
             casam_params_base.append('sft_coupled=true')
             casam_params_base.append(f'soil_z={soil_z}[cm]')
-
-        if (sft_coupled and (sft_calib in ["true", "True"])):
-            casam_params_base.append('calib_params=true')
-
-        if self.ngen_cal_type in ['calibration', 'validation', 'restart']:
-            casam_params_base.append('calib_params=true')
 
         soil_type_loc = casam_params_base.index("layer_soil_type=")
         giuh_loc_id = casam_params_base.index("giuh_ordinates=")
