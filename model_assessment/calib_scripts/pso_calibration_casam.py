@@ -144,6 +144,7 @@ nom_param_bounds_by_name = dict(zip(nom_param_names, nom_param_bounds))
 # Default request reproduces the original "12 LASAM-only params for 2-layer case" behavior:
 # - soil: log_alpha, n, log_Ks for layers 1 and 2 (6)
 # - scalars: log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 (6)
+# - CASAM lateral-flow scalars are calibrated in log10 space and applied model-wide
 #
 # If NOM exists and DEFAULT_INCLUDE_NOM_IF_PRESENT=True, upstream NOM params are auto-appended.
 #
@@ -158,6 +159,8 @@ CALIBRATION_REQUEST = [
     {"kind": "lasam", "param": "log10_a"},
     {"kind": "lasam", "param": "b"},
     {"kind": "lasam", "param": "frac_to_GW"},
+    {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
+    {"kind": "lasam", "param": "log10_lateral_flow_factor"},
     # {"kind": "lasam", "param": "field_capacity_psi"},
     {"kind": "lasam", "param": "spf_factor"},
     # {"kind": "lasam", "param": "theta_e_1"},
@@ -192,6 +195,8 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
         "log10_a": (-8.0, -1.0),
         "b": (0.01, 5.0),
         "frac_to_GW": (1e-4, 1.0 - 1e-4),
+        "log10_lateral_flow_psi_threshold": (0.0, 5.0),
+        "log10_lateral_flow_factor": (-4.0, 4.0),
         "field_capacity_psi": (10.0, 500.0),
         "spf_factor": (0.1, 1.0),
         "theta_e_1": (0.3, 0.6),
@@ -594,12 +599,19 @@ def read_lasam_scalar_baseline(tile_ctx: TileContext) -> Dict[str, float]:
     with open(cfg_path, "r") as f:
         lines = f.readlines()
 
-    def _get_float(prefix: str) -> float:
-        return float(next(line.split("=", 1)[1].strip().split("[")[0] for line in lines if line.strip().startswith(prefix)))
+    def _get_float(prefix: str, default: Optional[float] = None) -> float:
+        for line in lines:
+            if line.strip().startswith(prefix):
+                return float(line.split("=", 1)[1].strip().split("[")[0])
+        if default is not None:
+            return float(default)
+        raise ValueError(f"Missing CASAM scalar config line: {prefix}")
 
     a = _get_float("a=")
     b = _get_float("b=")
     frac_to_GW = _get_float("frac_to_GW=")
+    lateral_flow_psi_threshold = _get_float("lateral_flow_psi_threshold=", default=500.0)
+    lateral_flow_factor = _get_float("lateral_flow_factor=", default=1.0)
     field_capacity_psi = _get_float("field_capacity_psi=")
     spf_factor = _get_float("spf_factor=")
 
@@ -607,6 +619,8 @@ def read_lasam_scalar_baseline(tile_ctx: TileContext) -> Dict[str, float]:
         "log10_a": math.log10(a),
         "b": b,
         "frac_to_GW": frac_to_GW,
+        "log10_lateral_flow_psi_threshold": math.log10(lateral_flow_psi_threshold),
+        "log10_lateral_flow_factor": math.log10(lateral_flow_factor),
         "field_capacity_psi": field_capacity_psi,
         "spf_factor": spf_factor,
     }
@@ -668,6 +682,14 @@ def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
     elif param == "frac_to_GW":
         key = "frac_to_GW="
         out_line = f"frac_to_GW={float(value)}\n"
+    elif param == "log10_lateral_flow_psi_threshold":
+        lateral_flow_psi_threshold = 10 ** float(value)
+        key = "lateral_flow_psi_threshold="
+        out_line = f"lateral_flow_psi_threshold={lateral_flow_psi_threshold}\n"
+    elif param == "log10_lateral_flow_factor":
+        lateral_flow_factor = 10 ** float(value)
+        key = "lateral_flow_factor="
+        out_line = f"lateral_flow_factor={lateral_flow_factor}\n"
     elif param == "field_capacity_psi":
         key = "field_capacity_psi="
         out_line = f"field_capacity_psi={float(value)}[cm]\n"
@@ -682,11 +704,15 @@ def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
         with open(cfg_path, "r") as f:
             lines = f.readlines()
         out = []
+        changed = False
         for line in lines:
             if line.strip().startswith(key):
                 out.append(out_line)
+                changed = True
             else:
                 out.append(line)
+        if not changed:
+            out.append(out_line)
         with open(cfg_path, "w") as f:
             f.writelines(out)
 
