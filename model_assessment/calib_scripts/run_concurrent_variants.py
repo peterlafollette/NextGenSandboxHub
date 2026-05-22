@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -115,6 +116,31 @@ def write_selected_basin_csv(gages: list[str], logs_dir: Path) -> Path:
         for gage in gages:
             writer.writerow({"gage_id": gage, "num_divides": 0})
     return selected_csv
+
+
+def prepare_selected_input_dir(source_input_dir: Path, gages: list[str], output_root: Path) -> Path:
+    """Create a symlinked input tree containing only selected gage folders."""
+    selected_dir = output_root / "out" / "launcher_selected_input"
+    if selected_dir.exists() or selected_dir.is_symlink():
+        if selected_dir.is_symlink() or selected_dir.is_file():
+            selected_dir.unlink()
+        else:
+            shutil.rmtree(selected_dir)
+    selected_dir.mkdir(parents=True, exist_ok=True)
+
+    missing: list[str] = []
+    for gage in gages:
+        src = source_input_dir / str(gage)
+        if not src.exists():
+            missing.append(str(src))
+            continue
+        os.symlink(src, selected_dir / str(gage), target_is_directory=True)
+
+    if missing:
+        joined = "\n  ".join(missing)
+        raise SystemExit(f"Missing selected gage input directories:\n  {joined}")
+
+    return selected_dir
 
 
 def require_path_arg(name: str, value: str | None) -> Path:
@@ -407,6 +433,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-end", default=os.environ.get("NGEN_VAL_END", "2013-09-30"))
     parser.add_argument("--skip-conf", action="store_true", help="Reuse existing -conf outputs.")
     parser.add_argument("--conf-only", action="store_true", help="Run -conf and stop before calibration.")
+    parser.add_argument(
+        "--use-full-input-dir",
+        action="store_true",
+        help="Use CIROH_INPUT_DIR directly instead of a symlinked selected-gage input directory.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
     args = parser.parse_args()
 
@@ -446,6 +477,10 @@ def main() -> int:
         gages = read_gages_from_csv(args.basin_csv)
         basin_csv = args.basin_csv
 
+    source_input_dir = args.input_dir
+    if not args.use_full_input_dir:
+        args.input_dir = prepare_selected_input_dir(source_input_dir, gages, args.ngen_model_root)
+
     base_env = build_base_env(args, basin_csv)
     max_calibrations = args.max_concurrent_calibrations or len(variants) * len(gages)
 
@@ -453,6 +488,9 @@ def main() -> int:
     print("This script never calls -subset or -forc.")
     print(f"repo:       {REPO_ROOT}")
     print(f"root:       {args.ngen_model_root}")
+    print(f"input:      {args.input_dir}")
+    if args.input_dir != source_input_dir:
+        print(f"source:     {source_input_dir}")
     print(f"gages:      {', '.join(gages)}")
     print(f"variants:   {', '.join(v.label for v in variants)}")
     print(f"logs:       {args.launcher_logs_dir}")
