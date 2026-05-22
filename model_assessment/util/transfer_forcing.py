@@ -14,6 +14,9 @@ What it does:
 
 You can override paths/workers via env vars:
   TRANSFER_SOURCE_BASE, TRANSFER_DEST_BASE, TRANSFER_WORKERS
+
+For one-gage Slurm jobs, set TRANSFER_GAGE_ID, NGEN_GAGE_ID, or GAGE_ID.
+Set BASIN_CSV to use a different gage CSV when no single gage is provided.
 """
 
 import os
@@ -36,7 +39,17 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 def csv_path() -> Path:
-    return project_root() / "basin_IDs" / "basin_IDs.csv"
+    return Path(os.environ.get("BASIN_CSV", project_root() / "basin_IDs" / "basin_IDs.csv"))
+
+def gage_ids_from_env() -> list[str]:
+    value = (
+        os.environ.get("TRANSFER_GAGE_ID")
+        or os.environ.get("NGEN_GAGE_ID")
+        or os.environ.get("GAGE_ID")
+    )
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 def human(nbytes: int) -> str:
     units = ["B","KiB","MiB","GiB","TiB"]
@@ -174,15 +187,18 @@ def main():
     print(f"Workers:    {N_WORKERS}")
     print()
 
-    if not csvfile.exists():
+    env_gages = gage_ids_from_env()
+    if env_gages:
+        gages = env_gages
+    elif not csvfile.exists():
         print(f"ERROR: CSV not found: {csvfile}", file=sys.stderr)
         sys.exit(1)
-
-    try:
-        gages = read_gage_ids(csvfile)
-    except Exception as e:
-        print(f"ERROR reading CSV: {e}", file=sys.stderr)
-        sys.exit(1)
+    else:
+        try:
+            gages = read_gage_ids(csvfile)
+        except Exception as e:
+            print(f"ERROR reading CSV: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if not gages:
         print("No gage IDs found in CSV.")
