@@ -106,7 +106,7 @@ class DDS:
         self.observed_path = os.path.join(cfg.observed_q_root, "successful_sites_resampled", f"{self.gage_id}.csv")
 
     def optimize(self):
-        log_path = os.path.join(cfg.logging_dir, f"{self.gage_id}.csv")
+        log_path = os.path.join(cfe_runtime.gage_logging_dir(self.gage_id), f"{self.gage_id}.csv")
         log_rows = []
         num_params = len(self.bounds)
         start_time = datetime.now()
@@ -227,7 +227,7 @@ class DDS:
             retarget_realization_paths(
                 realization_path=realization_path,
                 work_root=work_root,
-                base_out_dir=os.path.join(tile_root, "out", self.gage_id),
+                base_out_dir=cfe_runtime.gage_output_dir(tile_root, self.gage_id),
             )
 
             regenerate_cfe_config(config_dir, true_best, base_names)
@@ -338,7 +338,11 @@ class DDS:
         so["stream_output_directory"] = troute_dir
         mask_path = so.get("mask_output")
         if not (isinstance(mask_path, str) and os.path.isfile(mask_path)):
-            orig_mask = os.path.join(router_tile_root, "out", self.gage_id, "configs", "mask_output.yaml")
+            orig_mask = os.path.join(
+                cfe_runtime.gage_output_dir(router_tile_root, self.gage_id),
+                "configs",
+                "mask_output.yaml",
+            )
             if os.path.isfile(orig_mask):
                 so["mask_output"] = orig_mask
             else:
@@ -476,7 +480,7 @@ if __name__ == "__main__":
 
     n_iterations = args.n_iterations
     max_cores_for_gages = args.max_gage_procs
-    cfe_runtime.sandbox_config_override = args.sandbox_config
+    cfe_runtime.sandbox_config_override = cfe_runtime.resolve_sandbox_config(args.sandbox_config)
     set_local_time_windows({
         "spinup_start": args.spinup_start,
         "cal_start": args.cal_start,

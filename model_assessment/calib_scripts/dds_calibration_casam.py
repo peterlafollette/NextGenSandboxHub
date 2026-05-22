@@ -97,7 +97,7 @@ class DDS:
     def optimize(self):
         start_time = datetime.now()
         job_cores = casam.runtime_job_cores(default=1)
-        log_path = os.path.join(casam.logging_dir, f"{self.gage_id}.csv")
+        log_path = os.path.join(casam.gage_logging_dir(self.gage_id), f"{self.gage_id}.csv")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         log_rows = []
         best_cal_metrics = {}
@@ -240,8 +240,8 @@ if __name__ == "__main__":
     n_iterations = args.n_iterations
     max_cores_for_gages = args.max_gage_procs
     if args.sandbox_config:
-        casam.HYDRO_SANDBOX_CONFIG = args.sandbox_config
-        os.environ["NGEN_SANDBOX_CONFIG"] = args.sandbox_config
+        casam.HYDRO_SANDBOX_CONFIG = casam.resolve_sandbox_config(args.sandbox_config)
+        os.environ["NGEN_SANDBOX_CONFIG"] = casam.HYDRO_SANDBOX_CONFIG
     casam.set_time_windows({
         "spinup_start": args.spinup_start,
         "cal_start": args.cal_start,

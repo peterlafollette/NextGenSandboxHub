@@ -255,7 +255,7 @@ class Driver:
             elif check.lower() in ["n", "no"]:
                 sys.exit("Quiting...")
 
-        assert os.path.exists(self.output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         assert os.path.exists(self.sandbox_dir)
         assert os.path.exists(self.ngen_dir)
 

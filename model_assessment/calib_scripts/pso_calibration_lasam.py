@@ -93,9 +93,21 @@ def set_time_windows(overrides: Optional[Dict[str, str]] = None):
     val_start = pd.Timestamp(time_cfg["val_start"])
     val_end = pd.Timestamp(time_cfg["val_end"])
 
+
+def ngen_time_string(value) -> str:
+    return pd.Timestamp(value).strftime("%Y-%m-%d %H:%M:%S")
+
+
 set_time_windows()
 
-sandbox_config_override = os.environ.get("NGEN_SANDBOX_CONFIG")
+
+def resolve_sandbox_config(path: str | None) -> str | None:
+    if not path:
+        return path
+    return os.path.abspath(os.path.expandvars(path))
+
+
+sandbox_config_override = resolve_sandbox_config(os.environ.get("NGEN_SANDBOX_CONFIG"))
 
 project_root = cfg.project_root
 sandbox_path = cfg.sandbox_path
@@ -103,7 +115,16 @@ logging_dir = cfg.logging_dir
 observed_q_root = cfg.observed_q_root
 model_roots = cfg.model_roots
 
-os.makedirs(logging_dir, exist_ok=True)
+def active_sandbox_config() -> str:
+    return sandbox_config_override or os.path.join(project_root, "configs", "sandbox_config_tile1.yaml")
+
+
+def gage_logging_dir(gage_id: str) -> str:
+    return cfg.gage_logging_dir(gage_id, model_roots[0], active_sandbox_config())
+
+
+def gage_output_dir(root: str, gage_id: str) -> str:
+    return cfg.gage_output_dir(gage_id, root, active_sandbox_config())
 
 # =========================
 # === NOM SETUP ===========
@@ -256,7 +277,7 @@ def wall_time_log_fields(start_time: datetime, job_cores: int, particle_pool_siz
 
 def pwork(root: str, gage_id: str, pid: int) -> str:
     """Particle workspace root created by `sandbox.py -conf --concurrent-particles`."""
-    return os.path.join(root, "out", gage_id, "particles", f"p{pid}")
+    return os.path.join(gage_output_dir(root, gage_id), "particles", f"p{pid}")
 
 def sandbox_config_for_tile(tile_idx: int) -> str:
     if sandbox_config_override:
@@ -269,7 +290,7 @@ def resolve_div_dir(tile_root: str, gage_id: str, pid: int) -> str:
     """
     candidates = [
         os.path.join(pwork(tile_root, gage_id, pid), "outputs", "div"),
-        os.path.join(tile_root, "out", gage_id, "outputs", "div"),
+        os.path.join(gage_output_dir(tile_root, gage_id), "outputs", "div"),
     ]
     first_existing = None
     for d in candidates:
@@ -290,15 +311,15 @@ def log_incomplete(
     iteration=None,
 ):
     try:
-        os.makedirs(logging_dir, exist_ok=True)
+        log_dir = gage_logging_dir(gage_id)
 
-        with open(os.path.join(logging_dir, f"{gage_id}_errors.log"), "a") as f:
+        with open(os.path.join(log_dir, f"{gage_id}_errors.log"), "a") as f:
             f.write(
                 f"{datetime.now().isoformat()} | iter={iteration} | pid={particle_idx} "
                 f"| stage={stage} | {err_msg}\n"
             )
 
-        csv_path = os.path.join(logging_dir, f"{gage_id}_incomplete.csv")
+        csv_path = os.path.join(log_dir, f"{gage_id}_incomplete.csv")
         row = {
             "timestamp": datetime.now().isoformat(),
             "gage_id": gage_id,
@@ -952,14 +973,14 @@ def objective_function_tiled(args):
         realization_path = os.path.join(json_dir, sorted(json_files)[0])  # FIXED: os.patho -> os.path
 
         # Retarget realization paths into particle workspace (LASAM/PET/NOM)
-        base_out_dir = os.path.join(tile_root, "out", gage_id)
+        base_out_dir = gage_output_dir(tile_root, gage_id)
         retarget_realization_paths(realization_path, work_root, base_out_dir)
 
         # Clamp time window to spinup->cal_end for calibration runs
         with open(realization_path, "r") as f:
             realization = json.load(f)
-        realization["time"]["start_time"] = time_cfg["spinup_start"]
-        realization["time"]["end_time"] = time_cfg["cal_end"]
+        realization["time"]["start_time"] = ngen_time_string(spinup_start)
+        realization["time"]["end_time"] = ngen_time_string(cal_end)
         with open(realization_path, "w") as f:
             json.dump(realization, f, indent=4)
 
@@ -1074,7 +1095,7 @@ def objective_function_tiled(args):
     # mask_output handling: if invalid, try base; else drop
     mask_path = so.get("mask_output")
     if not (isinstance(mask_path, str) and os.path.isfile(mask_path)):
-        orig_mask = os.path.join(router_tile_root, "out", gage_id, "configs", "mask_output.yaml")
+        orig_mask = os.path.join(gage_output_dir(router_tile_root, gage_id), "configs", "mask_output.yaml")
         if os.path.isfile(orig_mask):
             so["mask_output"] = orig_mask
         else:
@@ -1243,7 +1264,7 @@ class PSO:
     def optimize(self):
         start_time = datetime.now()
         log_rows = []
-        log_path = os.path.join(logging_dir, f"{self.gage_id}.csv")
+        log_path = os.path.join(gage_logging_dir(self.gage_id), f"{self.gage_id}.csv")
         w_start, w_end = 0.9, 0.4
         pool_size = max_particle_procs or len(self.particles)
         job_cores = runtime_job_cores(default=pool_size)
@@ -1373,13 +1394,13 @@ class PSO:
                 raise FileNotFoundError(f"No realization JSON found in {json_dir}")
             realization_path = os.path.join(json_dir, sorted(json_files)[0])
 
-            base_out_dir = os.path.join(tile_root, "out", self.gage_id)
+            base_out_dir = gage_output_dir(tile_root, self.gage_id)
             retarget_realization_paths(realization_path, work_root, base_out_dir)
 
             with open(realization_path, "r") as f:
                 realization = json.load(f)
-            realization["time"]["start_time"] = time_cfg["spinup_start"]
-            realization["time"]["end_time"] = time_cfg["val_end"]
+            realization["time"]["start_time"] = ngen_time_string(spinup_start)
+            realization["time"]["end_time"] = ngen_time_string(val_end)
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
 
@@ -1481,7 +1502,7 @@ class PSO:
 
         mask_path = so.get("mask_output")
         if not (isinstance(mask_path, str) and os.path.isfile(mask_path)):
-            orig_mask = os.path.join(router_tile_root, "out", self.gage_id, "configs", "mask_output.yaml")
+            orig_mask = os.path.join(gage_output_dir(router_tile_root, self.gage_id), "configs", "mask_output.yaml")
             if os.path.isfile(orig_mask):
                 so["mask_output"] = orig_mask
             else:
@@ -1619,7 +1640,7 @@ if __name__ == "__main__":
     n_iterations = args.n_iterations
     max_particle_procs = args.max_particle_procs
     max_cores_for_gages = args.max_gage_procs
-    sandbox_config_override = args.sandbox_config
+    sandbox_config_override = resolve_sandbox_config(args.sandbox_config)
     set_time_windows({
         "spinup_start": args.spinup_start,
         "cal_start": args.cal_start,
