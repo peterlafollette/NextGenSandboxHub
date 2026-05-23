@@ -1,71 +1,73 @@
-# Next-Generation Framework Sandbox Hub (NextGenSandboxHub)
-[NextGen](https://github.com/NOAA-OWP/ngen), Next-Generation Water Resources Modeling Framework, developed by the NOAA's Office of Water Prediction is a standards-based language- and model-agnostic framework, which allows to run a mosaic of surface and subsurface models in a single basin comprised of 10s-100s sub-catchments. 
+# NextGenSandboxHub
 
-## Schematic of the NextGenSandboxHub Workflow
+[NextGen](https://github.com/NOAA-OWP/ngen) is NOAA-OWP's model-agnostic hydrologic modeling framework. This branch has been refactored for HF 2.2 calibration runs where each job handles one gage/catchment, with independent output directories for CASAM/CFE and PET/NOM formulation variants.
 
 <div align="center">
 <img src="https://github.com/user-attachments/assets/d06b3cf9-6019-4ebd-86f1-e797b4debbae" style="width:800px; height:400px;"/>
 </div>
 
-## Current HF 2.2 Single-Gage Calibration Workflow
+## Current Workflow
 
-This branch is configured for a one-gage-per-job calibration workflow. The intended HPC pattern is:
+This branch is intended for pre-existing HF 2.2 inputs. In normal calibration runs, do not run `sandbox.py -subset` or `sandbox.py -forc`; those steps regenerate input data and can overwrite or modify geopackage/forcing products.
 
-1. Use pre-existing HF 2.2 geopackages and forcing files.
-2. Run `sandbox.py -conf` for exactly one gage to create model configs and particle-local workspaces.
-3. Run one calibration script for that same gage.
-4. Launch many independent Slurm array tasks, where each task handles one gage ID.
-
-Do not run `-subset` or `-forc` in this workflow unless you explicitly intend to regenerate input data. The expected input layout is:
+The expected input layout is:
 
 ```text
 ${CIROH_INPUT_DIR}/${GAGE_ID}/data/gage_${GAGE_ID}.gpkg
-${CIROH_INPUT_DIR}/${GAGE_ID}/data/forcing/
+${CIROH_INPUT_DIR}/${GAGE_ID}/data/forcing/2010_to_2022/*_corrected.nc
 ${NGSH_ROOT}/model_assessment/USGS_streamflow/successful_sites_resampled/${GAGE_ID}.csv
 ```
 
-### Required Environment
+The one-gage-per-job pattern is:
 
-Activate the Python environment and set the path variables before running configuration or calibration:
+1. Generate or update `model_assessment/util/downstream_flowpath_summary.csv` from the exact full HF 2.2 geopackage and the current `basin_IDs.csv`.
+2. Run `sandbox.py -conf` for one gage, one hydro model, and one formulation variant.
+3. Run the matching calibration script for that same gage.
+4. On the HPC, repeat this through Slurm arrays where each array task is one gage plus one formulation variant.
+
+## Important Paths
+
+The code is driven mostly by environment variables:
 
 ```bash
-source /Users/peterlafollette/.venv_sandbox_py3.11/bin/activate
-
-cd /path/to/NextGenSandboxHub
-
-export NGSH_ROOT="$PWD"
-export GAGE_ID=01089100
-export CIROH_INPUT_DIR="/path/to/standardized_CIROH_project/inhf22"
-export CIROH_HF_GPKG="/path/to/standardized_CIROH_project/conus_nextgen_updated_fixed.gpkg"
-export NGEN_DIR="/path/to/ngen"
-export NGEN_MODEL_ROOT="/tmp/ngen_${USER}_${GAGE_ID}"
-export BASIN_CSV="$NGSH_ROOT/basin_IDs/basin_IDs.csv"
-
-export NGEN_JOB_CORES=1
-export NGEN_TROUTE_CPU_POOL=1
-export OMP_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
+export NGSH_ROOT=/path/to/NextGenSandboxHub
+export BASIN_CSV=$NGSH_ROOT/basin_IDs/basin_IDs.csv
+export CIROH_INPUT_DIR=/path/to/inhf22
+export CIROH_HF_GPKG=/path/to/conus_nextgen_updated_fixed.gpkg
+export NGEN_DIR=/path/to/ngen
+export NGEN_MODEL_ROOT=/path/to/run/root
+export DOWNSTREAM_FLOWPATH_SUMMARY=$NGSH_ROOT/model_assessment/util/downstream_flowpath_summary.csv
 ```
 
-`NGEN_MODEL_ROOT` should be unique per gage/job, especially on the HPC. The calibration scripts read and write under:
+`NGEN_MODEL_ROOT` controls where local/manual outputs go. The variant config files place outputs under:
 
 ```text
-${NGEN_MODEL_ROOT}/out/${GAGE_ID}/
+${NGEN_MODEL_ROOT}/out/casam_pet/${GAGE_ID}
+${NGEN_MODEL_ROOT}/out/casam_nom/${GAGE_ID}
+${NGEN_MODEL_ROOT}/out/cfe_pet/${GAGE_ID}
+${NGEN_MODEL_ROOT}/out/cfe_nom/${GAGE_ID}
 ```
 
-### Choose The Formulation
+On the HPC Slurm workflow, `DEST_MODEL_ROOT` is the final shared output location. Jobs run in node-local tmp first, then copy the finished variant/gage directory back to:
 
-Select the model formulation in [configs/sandbox_config.yaml](configs/sandbox_config.yaml):
-
-```yaml
-formulation:
-  models: "PET, CASAM, T-route"
-  # models: "NOM, CASAM, T-route"
-  # models: "PET, CFE, T-route"
-  # models: "NOM, CFE, T-route"
+```text
+${DEST_MODEL_ROOT}/${MODEL}_${FORMULATION_VARIANT}/${GAGE_ID}
 ```
+
+For Agate, use a shared/project path for `DEST_MODEL_ROOT`, not home space.
+
+## Configuration Files
+
+Use the variant-specific sandbox configs for calibration:
+
+| Config | Formulation | Output subdir |
+| --- | --- | --- |
+| `configs/sandbox_config_casam.yaml` | `PET, CASAM, T-route` | `out/casam_pet` |
+| `configs/sandbox_config_nom_casam.yaml` | `NOM, CASAM, T-route` | `out/casam_nom` |
+| `configs/sandbox_config_cfe.yaml` | `PET, CFE, T-route` | `out/cfe_pet` |
+| `configs/sandbox_config_nom_cfe.yaml` | `NOM, CFE, T-route` | `out/cfe_nom` |
+
+`configs/sandbox_config.yaml` is still a generic/manual config, but the concurrent launcher and Slurm scripts use the variant-specific files above.
 
 HF 2.2 should leave divide-attribute computation disabled:
 
@@ -73,196 +75,233 @@ HF 2.2 should leave divide-attribute computation disabled:
 # compute_divide_attributes: true
 ```
 
-### Configure One Gage
+## Generate The HF 2.2 Downstream Summary
 
-Generate the downstream-flowpath summary for the exact HF 2.2 hydrofabric, then generate configs for the target gage:
+Run this after changing `basin_IDs/basin_IDs.csv`, or when switching to a different full hydrofabric geopackage:
 
 ```bash
-export GAGE_ID=01089100
-export NGEN_GAGE_ID="$GAGE_ID"
-export DOWNSTREAM_FLOWPATH_SUMMARY="${NGEN_MODEL_ROOT}/downstream_flowpath_summary.csv"
+cd /users/4/plafolle/infil_proj/NextGenSandboxHub
+source /users/4/plafolle/.venv_sandbox_py3.11/bin/activate
 
-mkdir -p "$NGEN_MODEL_ROOT/out"
+export NGSH_ROOT=/users/4/plafolle/infil_proj/NextGenSandboxHub
+export BASIN_CSV=$NGSH_ROOT/basin_IDs/basin_IDs.csv
+export CIROH_HF_GPKG=/users/4/plafolle/infil_proj/conus_nextgen_updated_fixed.gpkg
+export DOWNSTREAM_FLOWPATH_SUMMARY=$NGSH_ROOT/model_assessment/util/downstream_flowpath_summary.csv
 
 python model_assessment/util/get_penult_ids.py \
-  --gage-id "$GAGE_ID" \
-  --hf-gpkg "$CIROH_HF_GPKG"
-
-python sandbox.py -conf -i configs/sandbox_config.yaml \
-  --gage_id "$GAGE_ID" \
-  --concurrent-particles \
-  --num-particles 15
+  --hf-gpkg "$CIROH_HF_GPKG" \
+  --gage-file "$BASIN_CSV"
 ```
 
-`--concurrent-particles` only creates particle-local workspaces such as:
+The output file is used by calibration and t-route post-processing to identify the downstream nexus/flowpaths for the gage of interest.
+
+## Manual One-Gage Run Outside Slurm
+
+Example for CASAM + PET:
+
+```bash
+cd /users/4/plafolle/infil_proj/NextGenSandboxHub
+source /users/4/plafolle/.venv_sandbox_py3.11/bin/activate
+
+export NGSH_ROOT=/users/4/plafolle/infil_proj/NextGenSandboxHub
+export GAGE_ID=08158927
+export BASIN_CSV=$NGSH_ROOT/basin_IDs/basin_IDs.csv
+export CIROH_INPUT_DIR=/projects/standard/nieberj/shared/plafolle/inhf22
+export CIROH_HF_GPKG=/users/4/plafolle/infil_proj/conus_nextgen_updated_fixed.gpkg
+export NGEN_DIR=/users/4/plafolle/CIROH_project/ngen
+export NGEN_MODEL_ROOT=/projects/standard/nieberj/shared/plafolle/infil_proj/out/manual_test
+export DOWNSTREAM_FLOWPATH_SUMMARY=$NGSH_ROOT/model_assessment/util/downstream_flowpath_summary.csv
+
+export NGEN_JOB_CORES=4
+export NGEN_TROUTE_CPU_POOL=1
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+python sandbox.py \
+  -i configs/sandbox_config_casam.yaml \
+  -conf \
+  --gage_id "$GAGE_ID" \
+  --concurrent-particles \
+  --num-particles 2
+
+python model_assessment/calib_scripts/pso_calibration_casam.py \
+  --sandbox-config configs/sandbox_config_casam.yaml \
+  --gage-id "$GAGE_ID" \
+  --n-particles 2 \
+  --n-iterations 2 \
+  --max-particle-procs 2 \
+  --max-gage-procs 1 \
+  --spinup-start 2010-10-01 \
+  --cal-start 2011-01-01 \
+  --cal-end 2011-12-31 \
+  --val-start 2012-01-01 \
+  --val-end 2012-06-30
+```
+
+Swap the config/script pair for other variants, keeping the same calibration arguments shown above:
+
+```bash
+# CASAM + NOM
+python sandbox.py -i configs/sandbox_config_nom_casam.yaml -conf --gage_id "$GAGE_ID" --concurrent-particles --num-particles 2
+python model_assessment/calib_scripts/pso_calibration_casam.py --sandbox-config configs/sandbox_config_nom_casam.yaml --gage-id "$GAGE_ID"
+
+# CFE + PET
+python sandbox.py -i configs/sandbox_config_cfe.yaml -conf --gage_id "$GAGE_ID" --concurrent-particles --num-particles 2
+python model_assessment/calib_scripts/pso_calibration_cfe.py --sandbox-config configs/sandbox_config_cfe.yaml --gage-id "$GAGE_ID"
+
+# CFE + NOM
+python sandbox.py -i configs/sandbox_config_nom_cfe.yaml -conf --gage_id "$GAGE_ID" --concurrent-particles --num-particles 2
+python model_assessment/calib_scripts/pso_calibration_cfe.py --sandbox-config configs/sandbox_config_nom_cfe.yaml --gage-id "$GAGE_ID"
+```
+
+`--concurrent-particles` only creates particle-local workspaces. It does not allocate cores by itself. Actual particle concurrency is controlled by `--max-particle-procs`.
+
+## Local Concurrent Smoke Test
+
+`run_concurrent_variants.py` automates small local tests across multiple models, formulation variants, and gages. It never runs `-subset` or `-forc`.
+
+```bash
+cd /Users/peterlafollette/CIROH_single_catch_per_job_refactor/NextGenSandboxHub
+source /Users/peterlafollette/.venv_sandbox_py3.11/bin/activate
+
+python model_assessment/calib_scripts/run_concurrent_variants.py \
+  --models casam,cfe \
+  --formulation-variants pet,nom \
+  --gage-id 08158927,01311810 \
+  --input-dir /Volumes/OWCEnvoyProFX/inhf22/in \
+  --hf-gpkg /Users/peterlafollette/standardized_CIROH_project/conus_nextgen_updated_fixed.gpkg \
+  --ngen-dir /Users/peterlafollette/CIROH_project/ngen \
+  --ngen-model-root /Users/peterlafollette/CIROH_single_catch_per_job_refactor/local_concurrency_test \
+  --downstream-flowpath-summary /Users/peterlafollette/CIROH_single_catch_per_job_refactor/NextGenSandboxHub/model_assessment/util/downstream_flowpath_summary.csv \
+  --n-particles 2 \
+  --n-iterations 2 \
+  --max-particle-procs 2 \
+  --max-gage-procs 1 \
+  --max-concurrent-conf 1 \
+  --max-concurrent-calibrations 4 \
+  --job-cores 4 \
+  --troute-cpu-pool 1 \
+  --omp-num-threads 1 \
+  --spinup-start 2010-10-01 \
+  --cal-start 2011-01-01 \
+  --cal-end 2011-12-31 \
+  --val-start 2012-01-01 \
+  --val-end 2012-06-30
+```
+
+Use `--conf-only` to stop after configuration, or `--skip-conf` to reuse existing config outputs.
+
+## Slurm Array Workflow
+
+The Slurm helper submits one array per hydro model. Each array task handles exactly one gage and one formulation variant:
 
 ```text
-${NGEN_MODEL_ROOT}/out/${GAGE_ID}/particles/p0/
-${NGEN_MODEL_ROOT}/out/${GAGE_ID}/particles/p1/
+task 0 -> gage 0 PET
+task 1 -> gage 0 NOM
+task 2 -> gage 1 PET
+task 3 -> gage 1 NOM
 ...
 ```
 
-It does not by itself allocate cores or run particles. For a one-core job, cap the calibration with `--max-particle-procs 1`.
+For 100 gages and `MODELS=casam`, this submits one array with 200 tasks. For `MODELS=casam,cfe`, it submits two arrays, each with 200 tasks. Outputs do not clobber because every task writes to a distinct model/formulation/gage directory.
 
-### Run Calibration Outside Slurm
-
-Run one of the calibration scripts for the configured gage:
+### Agate Test Submission
 
 ```bash
-# CASAM PSO
-python model_assessment/calib_scripts/pso_calibration_casam.py \
-  --gage-id "$GAGE_ID" \
-  --n-particles 15 \
-  --n-iterations 50 \
-  --max-particle-procs 1 \
-  --max-gage-procs 1 \
-  --sandbox-config configs/sandbox_config.yaml
+cd /users/4/plafolle/infil_proj/NextGenSandboxHub
+source /users/4/plafolle/.venv_sandbox_py3.11/bin/activate
 
-# CFE PSO
-python model_assessment/calib_scripts/pso_calibration_cfe.py \
-  --gage-id "$GAGE_ID" \
-  --n-particles 15 \
-  --n-iterations 50 \
-  --max-particle-procs 1 \
-  --max-gage-procs 1 \
-  --sandbox-config configs/sandbox_config.yaml
+export NGSH_ROOT=/users/4/plafolle/infil_proj/NextGenSandboxHub
+export BASIN_CSV=$NGSH_ROOT/basin_IDs/basin_IDs.csv
+export SHARED_INPUT_DIR=/projects/standard/nieberj/shared/plafolle/inhf22
+export CIROH_HF_GPKG=/users/4/plafolle/infil_proj/conus_nextgen_updated_fixed.gpkg
+export NGEN_DIR=/users/4/plafolle/CIROH_project/ngen
+export DEST_MODEL_ROOT=/projects/standard/nieberj/shared/plafolle/infil_proj/out
+export DOWNSTREAM_FLOWPATH_SUMMARY=$NGSH_ROOT/model_assessment/util/downstream_flowpath_summary.csv
 
-# CASAM DDS
-python model_assessment/calib_scripts/dds_calibration_casam.py \
-  --gage-id "$GAGE_ID" \
-  --n-iterations 100 \
-  --max-gage-procs 1 \
-  --sandbox-config configs/sandbox_config.yaml
+export MODELS=casam,cfe
+export CPUS_PER_TASK=4
+export MEM_PER_CPU=8G
+export TMP_DISK=20G
+export TIME_LIMIT=1:00:00
 
-# CFE DDS
-python model_assessment/calib_scripts/dds_calibration_cfe.py \
-  --gage-id "$GAGE_ID" \
-  --n-iterations 100 \
-  --max-gage-procs 1 \
-  --sandbox-config configs/sandbox_config.yaml
+export N_PARTICLES=2
+export N_ITERATIONS=2
+export MAX_PARTICLE_PROCS=2
+export MAX_ARRAY_CONCURRENT=4
+
+bash slurm/submit_calibration_arrays.sh
 ```
 
-LASAM variants are also available:
+For a full production PSO run, increase the calibration controls, for example:
 
 ```bash
-python model_assessment/calib_scripts/pso_calibration_lasam.py --gage-id "$GAGE_ID"
-python model_assessment/calib_scripts/dds_calibration_lasam.py --gage-id "$GAGE_ID"
+export TIME_LIMIT=4-0
+export N_PARTICLES=12
+export N_ITERATIONS=42
+export MAX_PARTICLE_PROCS=4
+export MAX_ARRAY_CONCURRENT=200
 ```
 
-The calibration objective defaults to KGE. Calibration CSV logs include elapsed wall time, core count, and core-hours.
+`MAX_ARRAY_CONCURRENT` throttles how many array tasks run at the same time. It should be chosen based on scheduler/account limits and how many total cores you want active. With `CPUS_PER_TASK=4` and `MAX_ARRAY_CONCURRENT=200`, one model array can use up to 800 allocated cores if the scheduler starts all allowed tasks.
 
-### Outputs
+### What The Slurm Task Does
 
-The compact calibration log is written to:
+`slurm/run_gage_variant_array.sh`:
+
+1. Resolves `GAGE_ID` and PET/NOM from `SLURM_ARRAY_TASK_ID`.
+2. Creates a node-local tmp input and model-root directory.
+3. Copies only the selected gage from `SHARED_INPUT_DIR` to node-local tmp with `model_assessment/util/transfer_forcing.py`.
+4. Runs `sandbox.py -conf --concurrent-particles`.
+5. Runs the PSO calibration script for CASAM or CFE.
+6. Copies the completed variant/gage output back to `DEST_MODEL_ROOT`.
+
+The script sets Slurm stdout/stderr to `/dev/null`; run logs are written internally under the gage output directory.
+
+DDS calibration scripts are available, but the current Slurm helper is wired for PSO.
+
+## Outputs And Logs
+
+For local/manual runs:
 
 ```text
-${NGSH_ROOT}/logging/${GAGE_ID}.csv
+${NGEN_MODEL_ROOT}/out/${VARIANT}/${GAGE_ID}/
 ```
 
-Failure-only diagnostics may be written to:
+For Slurm runs:
 
 ```text
-${NGSH_ROOT}/logging/${GAGE_ID}_errors.log
-${NGSH_ROOT}/logging/${GAGE_ID}_incomplete.csv
+${DEST_MODEL_ROOT}/${VARIANT}/${GAGE_ID}/
 ```
 
-The final routed hydrograph for the best parameter set is written under the particle-0 workspace:
+where `VARIANT` is one of `casam_pet`, `casam_nom`, `cfe_pet`, or `cfe_nom`.
+
+Important files:
 
 ```text
-${NGEN_MODEL_ROOT}/out/${GAGE_ID}/particles/p0/postproc/${GAGE_ID}_best.csv
+logging/${GAGE_ID}.csv
+logging/${GAGE_ID}_errors.log
+logging/${GAGE_ID}_incomplete.csv
+logging/slurm_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${VARIANT}_${GAGE_ID}.log
+particles/p0/postproc/${GAGE_ID}_best.csv
+particles/p*/json/
+particles/p*/troute/
+particles/p*/postproc/
 ```
 
-Particle workspaces also contain the particle-local configs, realization JSONs, divide outputs, t-route NetCDFs, and intermediate hydrographs.
+The calibration CSV includes parameter values, calibration/validation metrics, status, wall time, `job_cores`, `particle_pool_size`, `core_hours_to_row`, and final `total_core_hours`. The objective function defaults to KGE.
 
-### Slurm Pattern
+## Calibration Notes
 
-On the HPC, prefer a Slurm array where each array task resolves one `GAGE_ID` from `BASIN_CSV`, creates a unique `NGEN_MODEL_ROOT`, runs `get_penult_ids.py`, runs `sandbox.py -conf`, and then runs exactly one calibration script. Use `--array=1-N%M` to control the number of simultaneous gage jobs.
-
-## Setup And Optional Data Preparation
-
-### <ins>  Step 1. Build Sandbox Workflow
-  - `git clone https://github.com/ajkhattak/NextGenSandboxHub && cd NextGenSandboxHub`
-  - `git submodule update --init`
-  - Run `./utils/build_sandbox.sh` (this will install python env required for the workflow, t-route, and ngen)
-  
-### <ins>  Step 2. Hydrofabric Installation
-Ensure R and Rtools are already installed before proceeding. There are two ways to install the required packages:
-  #### Option 1: Using RStudio
-  1. Open RStudio
-  2. Load and run the installation script by sourcing it:
-     - Open `<path_to_sandboxhub>/src/R/install_load_libs.R` in RStudio.
-     - Click Source to execute the script.
-     - Alternatively, run the following command in the RStudio Console:
-       ```
-       source("~/<path_to_sandboxhub>/src/R/install_load_libs.R")
-       ```
-  #### Option 2: Using the Command Line
-  Run the following command in a terminal or command prompt:
-  ```
-   Rscript <path_to_sandboxhub>/src/R/install_load_libs.R
-  ```
-
-### <ins> Step 3. Hydrofabric Subsetting
-For the current HF 2.2 calibration workflow, this step is normally skipped because geopackages already exist under `CIROH_INPUT_DIR`. Only run this step when intentionally creating or replacing basin geopackages.
-
-  - Dependency: Step 2
-  - Download domain (CONUS or oCONUS) from [lynker-spatial](https://www.lynker-spatial.com/data?path=hydrofabric%2Fv2.2%2F), for instance conus/conus_nextgen.gpkg
-  - open `<path_to_sandboxhub>/configs/sandbox_config.yaml` [here](configs/sandbox_config.yaml) and adjust sandbox_dir, input_dir, output_dir, and subsetting according to your local settings
-  - Now there are two options to proceed:
-      - run `python <path_to_sandboxhub>/sandbox.py -subset`
-      - or open `<path_to_sandboxhub>/src/R/main.R` in RStudio and source on main.R. Note Set file name `infile_config` [here](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/src/R/main.R#L53) 
-    
-    Either one will install the hydrofabric and several other libraries, and if everything goes well, a basin geopackage will be subsetted and stored under `<input_dir>/<basin_id>/data/gage_<basin_id>.gpkg`
-
-### <ins> Step 4. Forcing Data Download
-For the current HF 2.2 calibration workflow, this step is normally skipped because forcing files already exist under `CIROH_INPUT_DIR`. Only run this step when intentionally downloading or replacing forcing data.
-
-The workflow uses [CIROH_DL_NextGen](https://github.com/ajkhattak/CIROH_DL_NextGen) forcing_prep tool to download atmospheric forcing data. It uses a Python environment (`~/.venv_forcing`) that is created during the workflow setup step (Step 1). To download the forcing data run:
-```
-   python <path_to_sandboxhub>/sandbox.py -forc
-```
-
-====================================================================================
-### Note: Steps 5 and 6 require both the ngen and models builds. Please follow the instructions in the [build_models](https://github.com/ajkhattak/NextGenSandboxHub/blob/main/utils/build_models.sh) script to build ngen and models.
-====================================================================================
-
-Note: The sandbox workflow assumes that [ngen](https://github.com/NOAA-OWP/ngen) and models including [t-route](https://github.com/NOAA-OWP/t-route) have been built in the Python virtual environment created in Step 1.
-
- ### <ins>  Step 5a. Determine Nexus Used In Calibration
-For HF 2.2, generate this from the exact full hydrofabric used by the run. In one-gage-per-job mode, prefer a per-job summary file:
- ```
-    export DOWNSTREAM_FLOWPATH_SUMMARY="${NGEN_MODEL_ROOT}/downstream_flowpath_summary.csv"
-    python model_assessment/util/get_penult_ids.py --gage-id "$GAGE_ID" --hf-gpkg "$CIROH_HF_GPKG"
- ```
-
-### <ins>  Step 5b. Generate Configuration and Realization Files
-To generate configuration and realization files, set up the `formulation` block in the sandbox config file [here](configs/sandbox_config.yaml), then run `-conf` for one gage:
- ```
-    python sandbox.py -conf -i configs/sandbox_config.yaml \
-      --gage_id "$GAGE_ID" \
-      --concurrent-particles \
-      --num-particles "$N_PARTICLES"
- ```
-The current calibration scripts expect the particle-local workspaces created by `--concurrent-particles`.
-
-### <ins> Step 6. Run Calibration/Validation Simulations
-Run the calibration script for the same gage. For a one-core job, cap particle concurrency:
- ```
-    python model_assessment/calib_scripts/pso_calibration_casam.py \
-      --gage-id "$GAGE_ID" \
-      --n-particles "$N_PARTICLES" \
-      --n-iterations "$N_ITERATIONS" \
-      --max-particle-procs 1 \
-      --max-gage-procs 1 \
-      --sandbox-config configs/sandbox_config.yaml
- ```
-
-#### Summary
-1. Use existing HF 2.2 geopackage and forcing data.
-2. Generate the per-gage downstream-flowpath summary.
-3. Run `sandbox.py -conf --gage_id "$GAGE_ID" --concurrent-particles --num-particles "$N_PARTICLES"`.
-4. Run one calibration script for that gage.
-5. On the HPC, repeat this through a Slurm array with one gage per task.
+- CFE calibration uses the upstream CFE-S parameter set and ranges. The generated CFE configs use Schaake/CFE-S, not CFE-X.
+- CASAM calibration uses `vG_params_stat_nom_ordered.dat` for CASAM soil parameters.
+- CASAM config generation initializes `lateral_flow_psi_threshold=500.0` and `lateral_flow_factor=1.0`.
+- CASAM PSO and DDS use `pso_calibration_casam.py`'s `CALIBRATION_REQUEST`, which currently includes `log10_lateral_flow_psi_threshold` and `log10_lateral_flow_factor`. They are searched in log10 space and written back to CASAM as actual values.
+- To keep those CASAM lateral-flow parameters static, remove or comment their two entries in `CALIBRATION_REQUEST` before running CASAM PSO or DDS calibration.
+- NOM parameters are appended when NOM is present in the formulation. NOM slope/aspect initialization is aligned with the upstream flat-domain approach.
+- t-route is configured with `NGEN_TROUTE_CPU_POOL=1` in the Slurm workflow unless you explicitly change it.
 
 Available calibration scripts:
 
@@ -275,4 +314,42 @@ python model_assessment/calib_scripts/pso_calibration_lasam.py
 python model_assessment/calib_scripts/dds_calibration_lasam.py
 ```
 
-The compact per-gage calibration log is written to `logging/${GAGE_ID}.csv`.
+## Operational Commands
+
+Check Slurm jobs:
+
+```bash
+squeue -u $USER
+```
+
+Cancel only these calibration arrays, while leaving an interactive or virtual desktop job alone:
+
+```bash
+scancel --name=ngsh_casam
+scancel --name=ngsh_cfe
+```
+
+Pull HPC outputs to the local machine:
+
+```bash
+mkdir -p /Users/peterlafollette/CIROH_single_catch_per_job_refactor/HPC_test_results
+
+rsync -avh --progress -z \
+  "plafolle@ahl03.agate.msi.umn.edu:/home/nieberj/shared/plafolle/infil_proj/out/" \
+  "/Users/peterlafollette/CIROH_single_catch_per_job_refactor/HPC_test_results/out/"
+```
+
+## Legacy Setup And Data Preparation
+
+The original project setup scripts are still present, but the current calibration workflow assumes HF 2.2 geopackages, forcing files, streamflow observations, ngen, CFE, CASAM/LGAR-C, NOM, PET, and t-route already exist.
+
+Use these only when intentionally preparing or replacing data/builds:
+
+```bash
+./utils/build_sandbox.sh
+./utils/build_models.sh
+python sandbox.py -subset
+python sandbox.py -forc
+```
+
+Again, `-subset` and `-forc` are not part of the normal one-gage calibration workflow.
