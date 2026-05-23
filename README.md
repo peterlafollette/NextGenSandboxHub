@@ -247,6 +247,18 @@ export MAX_ARRAY_CONCURRENT=200
 
 `MAX_ARRAY_CONCURRENT` throttles how many array tasks run at the same time. It should be chosen based on scheduler/account limits and how many total cores you want active. With `CPUS_PER_TASK=4` and `MAX_ARRAY_CONCURRENT=200`, one model array can use up to 800 allocated cores if the scheduler starts all allowed tasks.
 
+For the current Agate paths and production PSO defaults, the convenience wrapper is:
+
+```bash
+bash /users/4/plafolle/infil_proj/NextGenSandboxHub/slurm/submit_agate_pso_production.sh
+```
+
+Override settings inline when needed:
+
+```bash
+MODELS=casam MAX_ARRAY_CONCURRENT=200 bash slurm/submit_agate_pso_production.sh
+```
+
 ### What The Slurm Task Does
 
 `slurm/run_gage_variant_array.sh`:
