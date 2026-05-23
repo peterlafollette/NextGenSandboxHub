@@ -335,7 +335,7 @@ Pull HPC outputs to the local machine:
 mkdir -p /Users/peterlafollette/CIROH_single_catch_per_job_refactor/HPC_test_results
 
 rsync -avh --progress -z \
-  "plafolle@ahl03.agate.msi.umn.edu:/home/nieberj/shared/plafolle/infil_proj/out/" \
+  "plafolle@ahl03.agate.msi.umn.edu:/projects/standard/nieberj/shared/plafolle/infil_proj/out/" \
   "/Users/peterlafollette/CIROH_single_catch_per_job_refactor/HPC_test_results/out/"
 ```
 
