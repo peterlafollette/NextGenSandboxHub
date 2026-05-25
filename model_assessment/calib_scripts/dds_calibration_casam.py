@@ -218,6 +218,7 @@ def calibrate_gage_dds(gage_id):
     except Exception as exc:
         print(f"Error calibrating {gage_id}: {exc}")
         traceback.print_exc()
+        raise
 
 
 def parse_args():
