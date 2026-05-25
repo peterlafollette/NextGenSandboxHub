@@ -958,10 +958,6 @@ class PSO:
                     # also mirror in the .log file with iteration context
                     log_incomplete(self.gage_id, idx, f"iter_{iteration+1}", err)
 
-                if particle.stagnation_counter >= stagnation_threshold:
-                    print(f"Resetting particle {idx} after {stagnation_threshold} stagnant iterations.")
-                    particle.reset(self.bounds)
-
                 param_dict = {name: val for name, val in zip(self.param_names, particle.position)}
                 row = {
                     "iteration": iteration + 1,
@@ -974,6 +970,24 @@ class PSO:
                     **wall_time_log_fields(start_time, job_cores, pool_size),
                 }
                 log_rows.append(row)
+
+            try:
+                current_objs = [p.current_value for p in self.particles]
+                best_idx_now = int(np.nanargmin(current_objs))
+            except Exception:
+                best_idx_now = None
+
+            for idx, particle in enumerate(self.particles):
+                if particle.stagnation_counter >= stagnation_threshold and (best_idx_now is None or idx != best_idx_now):
+                    print(f"Resetting particle {idx} after {stagnation_threshold} stagnant iterations.")
+                    log_rows.append({
+                        "iteration": iteration + 1,
+                        "particle": idx,
+                        "status": "RESET",
+                        "reason": f"stagnation >= {stagnation_threshold}",
+                        **wall_time_log_fields(start_time, job_cores, pool_size),
+                    })
+                    particle.reset(self.bounds)
 
             # write/flush after each iteration so partial progress is saved
             pd.DataFrame(log_rows).to_csv(log_path, index=False)

@@ -246,8 +246,8 @@ class DDS:
 
             with open(realization_path, "r") as f:
                 realization = json.load(f)
-            realization["time"]["start_time"] = time_cfg["spinup_start"]
-            realization["time"]["end_time"] = time_cfg["val_end"]
+            realization["time"]["start_time"] = cfe_runtime.ngen_time_string(spinup_start)
+            realization["time"]["end_time"] = cfe_runtime.ngen_time_string(val_end)
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
             update_noahowp_model_params(realization_path, nom_param_dict)
