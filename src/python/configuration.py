@@ -669,7 +669,7 @@ class ConfigurationGenerator:
         casam_params_base = [
             'verbosity=none',
             f'soil_params_file={soil_param_file}',
-            'layer_thickness=200.0[cm]',
+            'layer_thickness=100.0,200.0[cm]',
             'initial_psi=2000.0[cm]',
             'timestep=300[sec]',
             'endtime=1000000000.0[d]',
@@ -690,6 +690,7 @@ class ConfigurationGenerator:
             'PET_affects_precip=false',
             'spf_factor=0.6',
             'free_drainage_enabled=true',
+            'free_drainage_to_CR=true',
             'allow_flux_caching=true'
         ]
 
@@ -706,7 +707,11 @@ class ConfigurationGenerator:
             casam_params_cat = casam_params_base.copy()
             current_soil_type = int(str(self.gdf['ISLTYP'][cat_name]))
             current_soil_type = min(12, max(1, current_soil_type))
-            casam_params_cat[soil_type_loc] += str(current_soil_type)
+            if current_soil_type == 12:
+                next_soil_type = 11
+            else:
+                next_soil_type = min(12, max(1, current_soil_type + 2))
+            casam_params_cat[soil_type_loc] += f"{current_soil_type},{next_soil_type}"
 
             giuh_cat = json.loads(self.gdf['giuh'][cat_name])
             giuh_cat = pd.DataFrame(giuh_cat, columns=['v', 'frequency'])

@@ -160,10 +160,11 @@ nom_param_bounds_by_name = dict(zip(nom_param_names, nom_param_bounds))
 # =========================
 # User-editable. Controls optimizer search space.
 #
-# Default request reproduces the original "12 LASAM-only params for 2-layer case" behavior:
-# - soil: log_alpha, n, log_Ks for layers 1 and 2 (6)
-# - scalars: log10_a, b, frac_to_GW, field_capacity_psi, spf_factor, theta_e_1 (6)
-# - CASAM lateral-flow scalars are calibrated in log10 space and applied model-wide
+# Default request calibrates CASAM soil and scalar parameters:
+# - soil: log_alpha for layer 1; log_Ks for layers 1 and 2
+# - scalars: log10_a, b, frac_to_GW, spf_factor, and layer thickness for layers 1 and 2
+# - Optional CASAM lateral-flow scalars can be uncommented; they are calibrated
+#   in log10 space and applied model-wide.
 #
 # If NOM exists and DEFAULT_INCLUDE_NOM_IF_PRESENT=True, upstream NOM params are auto-appended.
 #
@@ -178,8 +179,8 @@ CALIBRATION_REQUEST = [
     {"kind": "lasam", "param": "log10_a"},
     {"kind": "lasam", "param": "b"},
     {"kind": "lasam", "param": "frac_to_GW"},
-    {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
-    {"kind": "lasam", "param": "log10_lateral_flow_factor"},
+    # {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
+    # {"kind": "lasam", "param": "log10_lateral_flow_factor"},
     # {"kind": "lasam", "param": "field_capacity_psi"},
     {"kind": "lasam", "param": "spf_factor"},
     # {"kind": "lasam", "param": "theta_e_1"},
@@ -214,8 +215,8 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
         "log10_a": (-8.0, -1.0),
         "b": (0.01, 5.0),
         "frac_to_GW": (1e-4, 1.0 - 1e-4),
-        "log10_lateral_flow_psi_threshold": (0.0, 5.0),
-        "log10_lateral_flow_factor": (-4.0, 4.0),
+        "log10_lateral_flow_psi_threshold": (0.0, 4.0),
+        "log10_lateral_flow_factor": (-3.0, 2.0),
         "field_capacity_psi": (10.0, 500.0),
         "spf_factor": (0.1, 1.0),
         "theta_e_1": (0.3, 0.6),
@@ -761,6 +762,76 @@ def apply_soil_param(tile_ctx: TileContext, layer_1based: int, param: str, value
     soil_lines[soil_type] = "\t".join(toks) + "\n"
     tile_ctx.write_soil_lines(soil_lines)
 
+SOIL_TABLE_COLUMN_BY_PARAM = {
+    "theta_r": 1,
+    "theta_e": 2,
+    "log_alpha": 3,
+    "alpha": 3,
+    "n": 4,
+    "log_Ks": 5,
+    "Ks": 5,
+}
+
+def calibrated_soil_columns_for_layer(specs: List[ParamSpec], layer_1based: int) -> set:
+    calibrated = set()
+    for spec in specs:
+        name = spec.name
+        if name == "theta_e_1":
+            if layer_1based == 1:
+                calibrated.add(SOIL_TABLE_COLUMN_BY_PARAM["theta_e"])
+            continue
+        if "_L" not in name:
+            continue
+        param, layer_str = name.rsplit("_L", 1)
+        try:
+            layer = int(layer_str)
+        except ValueError:
+            continue
+        if layer != layer_1based:
+            continue
+        col = SOIL_TABLE_COLUMN_BY_PARAM.get(param)
+        if col is not None:
+            calibrated.add(col)
+    return calibrated
+
+def mirror_second_layer_uncalibrated_soil_params(tile_ctx: TileContext, specs: List[ParamSpec]):
+    """
+    CASAM uses two soil layers but a shared soil table. For the second layer,
+    copy every non-calibrated soil-table parameter from the first layer after
+    particle parameters have been written, so any calibrated L1 value is mirrored
+    unless the corresponding L2 parameter is explicitly calibrated.
+    """
+    if tile_ctx.n_layers < 2:
+        return
+
+    top_soil_type = tile_ctx.soil_types[0]
+    second_soil_type = tile_ctx.soil_types[1]
+    if top_soil_type == second_soil_type:
+        return
+
+    tile_ctx.ensure_local_soil()
+    soil_lines = tile_ctx.read_soil_lines()
+    if top_soil_type >= len(soil_lines) or second_soil_type >= len(soil_lines):
+        raise IndexError(
+            f"CASAM soil type out of range: L1={top_soil_type}, L2={second_soil_type}, "
+            f"soil table rows={len(soil_lines)}"
+        )
+
+    top_toks = soil_lines[top_soil_type].split()
+    second_toks = soil_lines[second_soil_type].split()
+    max_param_col = min(len(top_toks), len(second_toks)) - 1
+    if max_param_col < 1:
+        return
+
+    calibrated_l2_cols = calibrated_soil_columns_for_layer(specs, layer_1based=2)
+    for col in range(1, max_param_col + 1):
+        if col in calibrated_l2_cols:
+            continue
+        second_toks[col] = top_toks[col]
+
+    soil_lines[second_soil_type] = "\t".join(second_toks) + "\n"
+    tile_ctx.write_soil_lines(soil_lines)
+
 def apply_theta_e_1(tile_ctx: TileContext, value: float):
     apply_soil_param(tile_ctx, layer_1based=1, param="theta_e", value=float(value))
 
@@ -935,6 +1006,8 @@ def apply_particle_params_for_tile(tile_ctx: TileContext, specs: List[ParamSpec]
 
     for spec, v in zip(specs, values):
         spec.apply(tile_ctx, float(v))
+
+    mirror_second_layer_uncalibrated_soil_params(tile_ctx, specs)
 
 def nom_updates_from_specs(specs: List[ParamSpec], values: np.ndarray) -> Dict[str, float]:
     return {
