@@ -35,6 +35,7 @@ import math
 import shutil
 import random
 import subprocess
+import shlex
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
@@ -171,9 +172,9 @@ nom_param_bounds_by_name = dict(zip(nom_param_names, nom_param_bounds))
 # Per your note: the user specifies layers explicitly; we do not auto-expand by detected n_layers.
 
 CALIBRATION_REQUEST = [
-    # {"kind": "soil", "param": "log_alpha", "layers": [1, 2]},
-    {"kind": "soil", "param": "log_alpha", "layers": [1]},
-    # {"kind": "soil", "param": "n", "layers": [1, 2]},
+    {"kind": "soil", "param": "log_alpha", "layers": [1, 2]},
+    #{"kind": "soil", "param": "log_alpha", "layers": [1]},
+    {"kind": "soil", "param": "n", "layers": [1, 2]},
     {"kind": "soil", "param": "log_Ks", "layers": [1, 2]},
 
     {"kind": "lasam", "param": "log10_a"},
@@ -181,10 +182,10 @@ CALIBRATION_REQUEST = [
     {"kind": "lasam", "param": "frac_to_GW"},
     # {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
     # {"kind": "lasam", "param": "log10_lateral_flow_factor"},
-    # {"kind": "lasam", "param": "field_capacity_psi"},
+    {"kind": "lasam", "param": "field_capacity_psi"},
     {"kind": "lasam", "param": "spf_factor"},
-    # {"kind": "lasam", "param": "theta_e_1"},
-    {"kind": "lasam", "param": "layer_thickness", "layers": [1, 2]},
+    {"kind": "lasam", "param": "theta_e_1"},
+    #{"kind": "lasam", "param": "layer_thickness", "layers": [1, 2]},
 ]
 
 # If True and NOM exists in a tile workspace, NOM parameters are included by default
@@ -480,6 +481,36 @@ class ParamSpec:
     init_value: float
     apply: Callable[["TileContext", float], None]
 
+@dataclass
+class SoilTableRow:
+    texture: str
+    values: List[str]
+
+SOIL_TABLE_VALUE_COUNT = 5
+
+def parse_soil_table_row(line: str) -> SoilTableRow:
+    try:
+        toks = shlex.split(line.strip())
+    except ValueError as exc:
+        raise ValueError(f"Could not parse CASAM soil table row: {line.rstrip()!r}") from exc
+
+    if len(toks) < SOIL_TABLE_VALUE_COUNT + 1:
+        raise ValueError(f"CASAM soil table row has too few columns: {line.rstrip()!r}")
+
+    values = toks[-SOIL_TABLE_VALUE_COUNT:]
+    texture = " ".join(toks[:-SOIL_TABLE_VALUE_COUNT]).strip()
+    if not texture:
+        raise ValueError(f"CASAM soil table row is missing texture name: {line.rstrip()!r}")
+
+    for value in values:
+        float(value)
+
+    return SoilTableRow(texture=texture, values=values)
+
+def format_soil_table_row(row: SoilTableRow) -> str:
+    texture = row.texture.replace('"', '\\"')
+    return f'"{texture}"\t' + "\t".join(row.values) + "\n"
+
 class TileContext:
     """Workspace context for a single tile workspace at (tile_root, gage_id, particle_id)."""
 
@@ -651,11 +682,11 @@ def read_soil_layer_baseline(tile_ctx: TileContext, layer_1based: int) -> Dict[s
     tile_ctx.ensure_local_soil()
     soil_lines = tile_ctx.read_soil_lines()
     soil_type = tile_ctx.soil_types[layer_1based - 1]
-    toks = soil_lines[soil_type].split()
-    theta_e = float(toks[2])
-    alpha = float(toks[3])
-    n = float(toks[4])
-    Ks = float(toks[5])
+    row = parse_soil_table_row(soil_lines[soil_type])
+    theta_e = float(row.values[1])
+    alpha = float(row.values[2])
+    n = float(row.values[3])
+    Ks = float(row.values[4])
     return {
         "theta_e": theta_e,
         "log_alpha": math.log10(alpha),
@@ -744,22 +775,22 @@ def apply_soil_param(tile_ctx: TileContext, layer_1based: int, param: str, value
     tile_ctx.ensure_local_soil()
     soil_lines = tile_ctx.read_soil_lines()
     soil_type = tile_ctx.soil_types[layer_1based - 1]
-    toks = soil_lines[soil_type].split()
+    row = parse_soil_table_row(soil_lines[soil_type])
 
     if param == "log_alpha":
         alpha = 10 ** float(value)
-        toks[3] = str(alpha)
+        row.values[2] = str(alpha)
     elif param == "n":
-        toks[4] = str(float(value))
+        row.values[3] = str(float(value))
     elif param == "log_Ks":
         Ks = 10 ** float(value)
-        toks[5] = str(Ks)
+        row.values[4] = str(Ks)
     elif param == "theta_e":
-        toks[2] = str(float(value))
+        row.values[1] = str(float(value))
     else:
         raise ValueError(f"Unknown soil param: {param}")
 
-    soil_lines[soil_type] = "\t".join(toks) + "\n"
+    soil_lines[soil_type] = format_soil_table_row(row)
     tile_ctx.write_soil_lines(soil_lines)
 
 SOIL_TABLE_COLUMN_BY_PARAM = {
@@ -817,9 +848,9 @@ def mirror_second_layer_uncalibrated_soil_params(tile_ctx: TileContext, specs: L
             f"soil table rows={len(soil_lines)}"
         )
 
-    top_toks = soil_lines[top_soil_type].split()
-    second_toks = soil_lines[second_soil_type].split()
-    max_param_col = min(len(top_toks), len(second_toks)) - 1
+    top_row = parse_soil_table_row(soil_lines[top_soil_type])
+    second_row = parse_soil_table_row(soil_lines[second_soil_type])
+    max_param_col = min(len(top_row.values), len(second_row.values))
     if max_param_col < 1:
         return
 
@@ -827,9 +858,9 @@ def mirror_second_layer_uncalibrated_soil_params(tile_ctx: TileContext, specs: L
     for col in range(1, max_param_col + 1):
         if col in calibrated_l2_cols:
             continue
-        second_toks[col] = top_toks[col]
+        second_row.values[col - 1] = top_row.values[col - 1]
 
-    soil_lines[second_soil_type] = "\t".join(second_toks) + "\n"
+    soil_lines[second_soil_type] = format_soil_table_row(second_row)
     tile_ctx.write_soil_lines(soil_lines)
 
 def apply_theta_e_1(tile_ctx: TileContext, value: float):
