@@ -208,6 +208,10 @@ class ConfigurationGenerator:
                         file.write(f'  output_filename   = \"output-{cat_name}.csv\"  \n')
                     elif line.strip().startswith('parameter_dir'):
                         file.write(f'  parameter_dir      = \"{os.path.join(nom_dir, "parameters")}\" \n')
+                    elif line.strip().startswith('stomatal_resistance_option'):
+                        file.write('  stomatal_resistance_option        = 4\n')
+                    elif line.strip().startswith('evap_srfc_resistance_option'):
+                        file.write('  evap_srfc_resistance_option       = 5\n')
                     elif line.strip().startswith('lat'):
                         file.write(f'  lat      = {centroid_y} \n')
                     elif line.strip().startswith('lon'):
