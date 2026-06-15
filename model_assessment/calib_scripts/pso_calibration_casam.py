@@ -216,7 +216,7 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
         "log10_a": (-8.0, -1.0),
         "b": (0.01, 5.0),
         "frac_to_GW": (1e-4, 1.0 - 1e-4),
-        "log10_lateral_flow_psi_threshold": (0.0, 4.0),
+        "log10_lateral_flow_psi_threshold": (0.0, 3.0),
         "log10_lateral_flow_factor": (-3.0, 2.0),
         "field_capacity_psi": (10.0, 500.0),
         "spf_factor": (0.1, 1.0),
