@@ -938,7 +938,7 @@ class PSO:
                 metric_validation = val_metrics.get(self.metric_to_calibrate_on, np.nan)
 
                 # Update per-particle and global bests only on success
-                if status == "OK" and objective_value < (particle.best_value - 0.001):
+                if status == "OK" and objective_value < (particle.best_value - 1e-6):
                     particle.best_value = objective_value
                     particle.best_position = np.copy(particle.position)
                     particle.stagnation_counter = 0
