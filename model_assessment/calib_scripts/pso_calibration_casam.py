@@ -161,9 +161,11 @@ nom_param_bounds_by_name = dict(zip(nom_param_names, nom_param_bounds))
 # =========================
 # User-editable. Controls optimizer search space.
 #
-# Default request calibrates CASAM soil and scalar parameters:
+# Default request calibrates CASAM soil and selected scalar parameters:
 # - soil: log_alpha for layer 1; log_Ks for layers 1 and 2
-# - scalars: log10_a, b, frac_to_GW, spf_factor, and layer thickness for layers 1 and 2
+# - scalars: field_capacity_psi and theta_e_1
+# - Optional legacy CASAM scalars can be uncommented if the corresponding config
+#   lines are present.
 # - Optional CASAM lateral-flow scalars can be uncommented; they are calibrated
 #   in log10 space and applied model-wide.
 #
@@ -177,13 +179,13 @@ CALIBRATION_REQUEST = [
     {"kind": "soil", "param": "n", "layers": [1, 2]},
     {"kind": "soil", "param": "log_Ks", "layers": [1, 2]},
 
-    {"kind": "lasam", "param": "log10_a"},
-    {"kind": "lasam", "param": "b"},
-    {"kind": "lasam", "param": "frac_to_GW"},
+    # {"kind": "lasam", "param": "log10_a"},
+    # {"kind": "lasam", "param": "b"},
+    # {"kind": "lasam", "param": "frac_to_GW"},
     # {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
     # {"kind": "lasam", "param": "log10_lateral_flow_factor"},
     {"kind": "lasam", "param": "field_capacity_psi"},
-    {"kind": "lasam", "param": "spf_factor"},
+    # {"kind": "lasam", "param": "spf_factor"},
     {"kind": "lasam", "param": "theta_e_1"},
     #{"kind": "lasam", "param": "layer_thickness", "layers": [1, 2]},
 ]
@@ -645,7 +647,10 @@ def apply_layer_thickness(tile_ctx: TileContext, layer_1based: int, value: float
             with open(cfg_path, "w") as f:
                 f.writelines(out)
 
-def read_lasam_scalar_baseline(tile_ctx: TileContext) -> Dict[str, float]:
+def read_lasam_scalar_baseline(
+    tile_ctx: TileContext,
+    requested_params: Optional[List[str]] = None,
+) -> Dict[str, float]:
     cfg_path = os.path.join(tile_ctx.lasam_cfg_dir, tile_ctx.lasam_cfg_files[0])
     with open(cfg_path, "r") as f:
         lines = f.readlines()
@@ -658,23 +663,45 @@ def read_lasam_scalar_baseline(tile_ctx: TileContext) -> Dict[str, float]:
             return float(default)
         raise ValueError(f"Missing CASAM scalar config line: {prefix}")
 
-    a = _get_float("a=")
-    b = _get_float("b=")
-    frac_to_GW = _get_float("frac_to_GW=")
-    lateral_flow_psi_threshold = _get_float("lateral_flow_psi_threshold=", default=500.0)
-    lateral_flow_factor = _get_float("lateral_flow_factor=", default=1.0)
-    field_capacity_psi = _get_float("field_capacity_psi=")
-    spf_factor = _get_float("spf_factor=")
+    if requested_params is None:
+        requested = {
+            "log10_a",
+            "b",
+            "frac_to_GW",
+            "log10_lateral_flow_psi_threshold",
+            "log10_lateral_flow_factor",
+            "field_capacity_psi",
+            "spf_factor",
+        }
+    else:
+        requested = set(requested_params)
 
-    return {
-        "log10_a": math.log10(a),
-        "b": b,
-        "frac_to_GW": frac_to_GW,
-        "log10_lateral_flow_psi_threshold": math.log10(lateral_flow_psi_threshold),
-        "log10_lateral_flow_factor": math.log10(lateral_flow_factor),
-        "field_capacity_psi": field_capacity_psi,
-        "spf_factor": spf_factor,
-    }
+    values: Dict[str, float] = {}
+    if "log10_a" in requested:
+        a = _get_float("a=")
+        if a <= 0.0:
+            raise ValueError("CASAM scalar a must be > 0 for log10_a calibration")
+        values["log10_a"] = math.log10(a)
+    if "b" in requested:
+        values["b"] = _get_float("b=")
+    if "frac_to_GW" in requested:
+        values["frac_to_GW"] = _get_float("frac_to_GW=")
+    if "log10_lateral_flow_psi_threshold" in requested:
+        lateral_flow_psi_threshold = _get_float("lateral_flow_psi_threshold=", default=500.0)
+        if lateral_flow_psi_threshold <= 0.0:
+            raise ValueError("CASAM lateral_flow_psi_threshold must be > 0 for log10 calibration")
+        values["log10_lateral_flow_psi_threshold"] = math.log10(lateral_flow_psi_threshold)
+    if "log10_lateral_flow_factor" in requested:
+        lateral_flow_factor = _get_float("lateral_flow_factor=", default=1.0)
+        if lateral_flow_factor <= 0.0:
+            raise ValueError("CASAM lateral_flow_factor must be > 0 for log10 calibration")
+        values["log10_lateral_flow_factor"] = math.log10(lateral_flow_factor)
+    if "field_capacity_psi" in requested:
+        values["field_capacity_psi"] = _get_float("field_capacity_psi=")
+    if "spf_factor" in requested:
+        values["spf_factor"] = _get_float("spf_factor=")
+
+    return values
 
 def read_soil_layer_baseline(tile_ctx: TileContext, layer_1based: int) -> Dict[str, float]:
     if layer_1based < 1 or layer_1based > tile_ctx.n_layers:
@@ -883,7 +910,6 @@ def apply_nom_param(tile_ctx: TileContext, param: str, value: float):
 
 def build_specs_for_tile(tile_ctx: TileContext, tile_idx: int) -> List[ParamSpec]:
     specs: List[ParamSpec] = []
-    lasam_base = read_lasam_scalar_baseline(tile_ctx)
 
     request_list = list(CALIBRATION_REQUEST)
     if DEFAULT_INCLUDE_NOM_IF_PRESENT and tile_ctx.include_nom:
@@ -968,6 +994,7 @@ def build_specs_for_tile(tile_ctx: TileContext, tile_idx: int) -> List[ParamSpec
                     )
                 )
             else:
+                lasam_base = read_lasam_scalar_baseline(tile_ctx, requested_params=[param])
                 if param not in lasam_base:
                     raise ValueError(f"Baseline missing lasam param: {param}")
                 specs.append(
