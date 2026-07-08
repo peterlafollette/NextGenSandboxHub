@@ -63,7 +63,10 @@ fi
 
 cd "$NGSH_ROOT"
 
-mapfile -t GAGES < <(awk -F',' 'NR>1 {gsub(/\r/,"",$1); if ($1!="") print $1}' "$BASIN_CSV")
+GAGES=()
+while IFS= read -r gage; do
+    GAGES+=("$gage")
+done < <(awk -F',' 'NR>1 {gsub(/\r/,"",$1); if ($1!="") print $1}' "$BASIN_CSV")
 N_GAGES="${#GAGES[@]}"
 if [ "$N_GAGES" -eq 0 ]; then
     echo "No gages found in $BASIN_CSV" >&2

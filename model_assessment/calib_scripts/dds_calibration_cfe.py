@@ -18,7 +18,11 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from model_assessment.configs import path_config as cfg
 from model_assessment.util.metrics import compute_metrics
-from model_assessment.util.update_NOM import update_mptable, update_noahowp_model_params
+from model_assessment.util.update_NOM import (
+    update_mptable,
+    update_noahowp_model_params,
+    update_noahowp_time_window,
+)
 import shutil 
 import pso_calibration_cfe as cfe_runtime
 
@@ -250,6 +254,7 @@ class DDS:
             realization["time"]["end_time"] = cfe_runtime.ngen_time_string(val_end)
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
+            update_noahowp_time_window(realization_path, spinup_start, val_end)
             update_noahowp_model_params(realization_path, nom_param_dict)
 
             for item in list(os.listdir(div_dir)):

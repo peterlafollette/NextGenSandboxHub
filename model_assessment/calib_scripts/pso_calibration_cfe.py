@@ -29,6 +29,7 @@ from model_assessment.util.update_NOM import (
     canonical_nom_param,
     update_mptable,
     update_noahowp_model_params,
+    update_noahowp_time_window,
 )
 from model_assessment.configs import path_config as cfg
 from multiprocessing.pool import ThreadPool
@@ -616,6 +617,7 @@ def objective_function_tiled(args):
             work_root=work_root,
             base_out_dir=base_out_dir,
         )
+        update_noahowp_time_window(realization_path, spinup_start, cal_end)
         update_noahowp_model_params(realization_path, nom_param_dict)
 
         ret = subprocess.call(
@@ -1086,6 +1088,7 @@ class PSO:
                 work_root=work_root,   # p<best_pid> workspace
                 base_out_dir=base_out_dir,
             )
+            update_noahowp_time_window(realization_path, spinup_start, val_end)
             update_noahowp_model_params(realization_path, nom_param_dict)
 
             ret = subprocess.call(

@@ -56,6 +56,7 @@ from model_assessment.util.update_NOM import (
     canonical_nom_param,
     update_mptable,
     update_noahowp_model_params,
+    update_noahowp_time_window,
 )
 from model_assessment.configs import path_config as cfg
 
@@ -983,6 +984,7 @@ def objective_function_tiled(args):
         realization["time"]["end_time"] = ngen_time_string(cal_end)
         with open(realization_path, "w") as f:
             json.dump(realization, f, indent=4)
+        update_noahowp_time_window(realization_path, spinup_start, cal_end)
 
         # Apply parameter set to particle-local LASAM/NOM files
         tile_ctx = TileContext(tile_root, gage_id, particle_idx, work_root)
@@ -1403,6 +1405,7 @@ class PSO:
             realization["time"]["end_time"] = ngen_time_string(val_end)
             with open(realization_path, "w") as f:
                 json.dump(realization, f, indent=4)
+            update_noahowp_time_window(realization_path, spinup_start, val_end)
 
             tile_ctx = TileContext(tile_root, self.gage_id, best_pid, work_root)
             apply_particle_params_for_tile(tile_ctx, self.specs_by_tile[tile_idx], tile_vals)
