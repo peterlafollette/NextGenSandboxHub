@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -46,6 +47,211 @@ def directory_size(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def is_cfe_nom_variant(variant: str) -> bool:
+    """Match PSO and algorithm-prefixed variants such as dds_cfe_nom."""
+    return str(variant).strip().lower().split("_")[-2:] == ["cfe", "nom"]
+
+
+def final_realization_time_window(
+    best_root: Path, warnings: list[str]
+) -> tuple[Path, str, str] | None:
+    """Read the finalized best-particle realization used by ngen."""
+    json_dir = best_root / "json"
+    candidates = sorted(json_dir.glob("realization*.json"))
+    windows: list[tuple[Path, str, str]] = []
+
+    for path in candidates:
+        try:
+            realization = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(f"Could not read final realization {path}: {exc}")
+            continue
+
+        time_config = realization.get("time")
+        if not isinstance(time_config, dict):
+            warnings.append(f"Final realization has no time object: {path}")
+            continue
+        start_time = time_config.get("start_time")
+        end_time = time_config.get("end_time")
+        if not start_time or not end_time:
+            warnings.append(f"Final realization has incomplete time window: {path}")
+            continue
+        windows.append((path, str(start_time), str(end_time)))
+
+    if not windows:
+        warnings.append(f"No finalized realization time window found under {json_dir}")
+        return None
+
+    distinct = {(start, end) for _, start, end in windows}
+    if len(distinct) != 1:
+        warnings.append(
+            "Final best-particle realizations disagree on the time window: "
+            + ", ".join(f"{start} -> {end}" for start, end in sorted(distinct))
+        )
+        return None
+
+    return windows[0]
+
+
+def synchronize_realization_times(
+    best_root: Path, start_time: str, end_time: str, warnings: list[str]
+) -> int:
+    """Set the final time window in every retained realization copy."""
+    synchronized = 0
+    for directory in (best_root / "json", best_root / "shared_json"):
+        for path in sorted(directory.glob("realization*.json")):
+            try:
+                realization = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                warnings.append(f"Could not synchronize realization {path}: {exc}")
+                continue
+
+            time_config = realization.get("time")
+            if not isinstance(time_config, dict):
+                warnings.append(f"Retained realization has no time object: {path}")
+                continue
+            time_config["start_time"] = start_time
+            time_config["end_time"] = end_time
+            path.write_text(json.dumps(realization, indent=4) + "\n")
+            synchronized += 1
+    return synchronized
+
+
+def yaml_scalar(path: Path, key: str) -> str:
+    pattern = re.compile(
+        rf"^[ \t]*{re.escape(key)}[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE
+    )
+    matches = pattern.findall(path.read_text())
+    if len(matches) != 1:
+        raise ValueError(f"Expected one {key!r} entry in {path}, found {len(matches)}")
+    return matches[0]
+
+
+def replace_yaml_scalar(path: Path, key: str, value: str) -> None:
+    text = path.read_text()
+    pattern = re.compile(
+        rf"^([ \t]*{re.escape(key)}[ \t]*:[ \t]*).*?$", re.MULTILINE
+    )
+    updated, count = pattern.subn(lambda match: f"{match.group(1)}{value}", text)
+    if count != 1:
+        raise ValueError(f"Expected one {key!r} entry in {path}, found {count}")
+    path.write_text(updated)
+
+
+def synchronize_troute_times(best_root: Path, warnings: list[str]) -> int:
+    """Copy final particle t-route timing scalars into all retained copies."""
+    final_path = best_root / "configs" / "troute_config.yaml"
+    if not final_path.is_file():
+        warnings.append(f"No finalized t-route config found at {final_path}")
+        return 0
+
+    try:
+        start_datetime = yaml_scalar(final_path, "start_datetime")
+        nts = yaml_scalar(final_path, "nts")
+    except (OSError, ValueError) as exc:
+        warnings.append(f"Could not read finalized t-route timing: {exc}")
+        return 0
+
+    synchronized = 0
+    for path in (
+        best_root / "configs" / "troute_config.yaml",
+        best_root / "shared_configs" / "troute_config.yaml",
+    ):
+        if not path.is_file():
+            continue
+        try:
+            replace_yaml_scalar(path, "start_datetime", start_datetime)
+            replace_yaml_scalar(path, "nts", nts)
+        except (OSError, ValueError) as exc:
+            warnings.append(f"Could not synchronize t-route config {path}: {exc}")
+            continue
+        synchronized += 1
+    return synchronized
+
+
+def format_noahowp_time(value: str) -> str:
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y%m%d%H%M")
+        except ValueError:
+            pass
+    raise ValueError(f"Cannot format NoahOWP time from {value!r}")
+
+
+def synchronize_noahowp_times(
+    best_root: Path, start_time: str, end_time: str, warnings: list[str]
+) -> int:
+    """Set final startdate/enddate in every retained NoahOWP input copy."""
+    try:
+        startdate = format_noahowp_time(start_time)
+        enddate = format_noahowp_time(end_time)
+    except ValueError as exc:
+        warnings.append(str(exc))
+        return 0
+
+    synchronized = 0
+    paths: set[Path] = set()
+    for directory in (
+        best_root / "configs" / "noahowp",
+        best_root / "shared_configs" / "noahowp",
+    ):
+        if directory.is_dir():
+            paths.update(path for path in directory.glob("*.input") if path.is_file())
+
+    for path in sorted(paths):
+        try:
+            lines = path.read_text().splitlines(keepends=True)
+        except OSError as exc:
+            warnings.append(f"Could not read retained NoahOWP input {path}: {exc}")
+            continue
+        found_start = False
+        found_end = False
+        updated_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip().lower()
+            newline = "\n" if line.endswith("\n") else ""
+            indent = line[: len(line) - len(line.lstrip())]
+            if stripped.startswith("startdate"):
+                updated_lines.append(f'{indent}startdate      = "{startdate}"  {newline}')
+                found_start = True
+            elif stripped.startswith("enddate"):
+                updated_lines.append(f'{indent}enddate      = "{enddate}"  {newline}')
+                found_end = True
+            else:
+                updated_lines.append(line)
+
+        if not found_start or not found_end:
+            warnings.append(f"Could not find startdate/enddate in retained NoahOWP input: {path}")
+            continue
+        try:
+            path.write_text("".join(updated_lines))
+        except OSError as exc:
+            warnings.append(f"Could not synchronize retained NoahOWP input {path}: {exc}")
+            continue
+        synchronized += 1
+    return synchronized
+
+
+def synchronize_retained_timing(best_root: Path, warnings: list[str]) -> dict[str, object]:
+    """Normalize timing metadata in duplicate compact-archive configurations."""
+    final_window = final_realization_time_window(best_root, warnings)
+    if final_window is None:
+        return {}
+
+    realization_path, start_time, end_time = final_window
+    return {
+        "source_realization": str(realization_path.relative_to(best_root.parent)),
+        "start_time": start_time,
+        "end_time": end_time,
+        "realizations": synchronize_realization_times(best_root, start_time, end_time, warnings),
+        "troute_configs": synchronize_troute_times(best_root, warnings),
+        "noahowp_inputs": synchronize_noahowp_times(
+            best_root, start_time, end_time, warnings
+        ),
+    }
 
 
 def find_best_hydrograph(source: Path, gage_id: str) -> Path | None:
@@ -102,6 +308,7 @@ def compact_outputs(
     dest = dest.resolve()
     warnings: list[str] = []
     copied: list[str] = []
+    timing_synchronization: dict[str, object] = {}
 
     if not source.is_dir():
         print(f"Source gage directory does not exist: {source}", file=sys.stderr)
@@ -159,6 +366,24 @@ def compact_outputs(
                 copy_tree(src, best_root / f"shared_{name}")
                 copied.append(str((best_root / f"shared_{name}").relative_to(dest)))
 
+        # CFE+NOM realizations keep NoahOWP init_config paths at the gage level,
+        # while CFE paths are retargeted into the particle workspace. Replace
+        # the unused particle NoahOWP copy with the files the final ngen run
+        # actually referenced. Remove the destination first so particle-only
+        # files cannot survive the overlay.
+        if is_cfe_nom_variant(variant):
+            shared_noahowp = source / "configs" / "noahowp"
+            best_noahowp = best_root / "configs" / "noahowp"
+            if shared_noahowp.is_dir():
+                if best_noahowp.exists():
+                    shutil.rmtree(best_noahowp)
+                copy_tree(shared_noahowp, best_noahowp)
+                copied.append(str(best_noahowp.relative_to(dest)))
+            else:
+                warnings.append(f"Missing shared CFE+NOM NoahOWP directory: {shared_noahowp}")
+
+        timing_synchronization = synchronize_retained_timing(best_root, warnings)
+
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": str(source),
@@ -172,6 +397,8 @@ def compact_outputs(
         "copied": copied,
         "warnings": warnings,
     }
+    if timing_synchronization:
+        manifest["timing_synchronization"] = timing_synchronization
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     size_before = directory_size(source)

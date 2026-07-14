@@ -489,6 +489,58 @@ class SoilTableRow:
     texture: str
     values: List[str]
 
+@dataclass
+class CatchmentSoilContext:
+    """CASAM soil-table state for one catchment config in a particle workspace."""
+
+    config_name: str
+    config_path: str
+    soil_types: List[int]
+    src_soil_path: str
+    local_soil_path: str
+    _soil_lines_cache: Optional[List[str]] = None
+
+    @property
+    def n_layers(self) -> int:
+        return len(self.soil_types)
+
+    def ensure_local_soil(self):
+        if not os.path.isfile(self.local_soil_path):
+            if not os.path.isfile(self.src_soil_path):
+                raise FileNotFoundError(f"soil_params_file not found: {self.src_soil_path}")
+            shutil.copy2(self.src_soil_path, self.local_soil_path)
+
+        with open(self.config_path, "r") as f:
+            lines = f.readlines()
+
+        out = []
+        found_soil_path = False
+        for line in lines:
+            if line.strip().startswith("soil_params_file"):
+                out.append(f"soil_params_file={os.path.abspath(self.local_soil_path)}\n")
+                found_soil_path = True
+            else:
+                out.append(line)
+        if not found_soil_path:
+            raise ValueError(f"Missing soil_params_file in CASAM config: {self.config_path}")
+
+        with open(self.config_path, "w") as f:
+            f.writelines(out)
+
+    def read_soil_lines(self) -> List[str]:
+        if self._soil_lines_cache is not None:
+            return self._soil_lines_cache
+        if not os.path.isfile(self.local_soil_path):
+            raise FileNotFoundError(f"Local soil file not found: {self.local_soil_path}")
+        with open(self.local_soil_path, "r") as f:
+            self._soil_lines_cache = f.readlines()
+        return self._soil_lines_cache
+
+    def write_soil_lines(self, lines: List[str]):
+        with open(self.local_soil_path, "w") as f:
+            f.writelines(lines)
+        self._soil_lines_cache = lines
+
 SOIL_TABLE_VALUE_COUNT = 5
 
 def parse_soil_table_row(line: str) -> SoilTableRow:
@@ -531,60 +583,68 @@ class TileContext:
         if not self.lasam_cfg_files:
             raise FileNotFoundError(f"No {HYDRO_MODEL_LABEL} configs found in {self.lasam_cfg_dir}")
 
-        first_cfg = os.path.join(self.lasam_cfg_dir, self.lasam_cfg_files[0])
-        with open(first_cfg, "r") as f:
-            lines = f.readlines()
+        self.soil_contexts: List[CatchmentSoilContext] = []
+        for cfg_name in self.lasam_cfg_files:
+            cfg_path = os.path.join(self.lasam_cfg_dir, cfg_name)
+            with open(cfg_path, "r") as f:
+                lines = f.readlines()
 
-        soil_types_line = next(line for line in lines if line.strip().startswith("layer_soil_type="))
-        self.soil_types: List[int] = list(map(int, soil_types_line.strip().split("=", 1)[1].split(",")))
-        self.n_layers = len(self.soil_types)
+            soil_types_line = next(
+                (line for line in lines if line.strip().startswith("layer_soil_type=")),
+                None,
+            )
+            if soil_types_line is None:
+                raise ValueError(f"Missing layer_soil_type in CASAM config: {cfg_path}")
+            soil_types = list(map(int, soil_types_line.strip().split("=", 1)[1].split(",")))
 
-        soil_file_line = next(line for line in lines if line.strip().startswith("soil_params_file"))
-        soil_file = soil_file_line.split("=", 1)[1].strip()
-        soil_path = Path(soil_file)
-        if not soil_path.is_absolute():
-            soil_path = (Path(first_cfg).parent / soil_path).resolve()
-        self.src_soil_path = str(soil_path)
-        self.local_soil_path = os.path.join(self.lasam_cfg_dir, Path(self.src_soil_path).name)
+            soil_file_line = next(
+                (line for line in lines if line.strip().startswith("soil_params_file")),
+                None,
+            )
+            if soil_file_line is None:
+                raise ValueError(f"Missing soil_params_file in CASAM config: {cfg_path}")
+            soil_file = soil_file_line.split("=", 1)[1].strip()
+            soil_path = Path(soil_file)
+            if not soil_path.is_absolute():
+                soil_path = (Path(cfg_path).parent / soil_path).resolve()
+
+            suffix = soil_path.suffix or ".dat"
+            local_soil_path = os.path.join(
+                self.lasam_cfg_dir,
+                f"soil_params_{Path(cfg_name).stem}{suffix}",
+            )
+            self.soil_contexts.append(
+                CatchmentSoilContext(
+                    config_name=cfg_name,
+                    config_path=cfg_path,
+                    soil_types=soil_types,
+                    src_soil_path=str(soil_path),
+                    local_soil_path=local_soil_path,
+                )
+            )
+
+        # Preserve the existing parameter-vector initialization semantics: bounds and
+        # initial values still come from the first sorted catchment config. Particle
+        # values are applied to every catchment-specific table below.
+        primary_soil = self.soil_contexts[0]
+        self.soil_types = primary_soil.soil_types
+        self.n_layers = primary_soil.n_layers
+        self.src_soil_path = primary_soil.src_soil_path
+        self.local_soil_path = primary_soil.local_soil_path
 
         self.nom_dir = os.path.join(work_root, "configs", "noahowp")
         self.include_nom = os.path.isdir(self.nom_dir)
         self.nom_mptable = os.path.join(self.nom_dir, "parameters", "MPTABLE.TBL")
 
-        self._soil_lines_cache: Optional[List[str]] = None
-
     def ensure_local_soil(self):
-        if not os.path.isfile(self.local_soil_path):
-            if not os.path.isfile(self.src_soil_path):
-                raise FileNotFoundError(f"soil_params_file not found: {self.src_soil_path}")
-            shutil.copy2(self.src_soil_path, self.local_soil_path)
-
-        for cfg_name in self.lasam_cfg_files:
-            cfg_path = os.path.join(self.lasam_cfg_dir, cfg_name)
-            with open(cfg_path, "r") as f:
-                lines = f.readlines()
-            out = []
-            for line in lines:
-                if line.strip().startswith("soil_params_file"):
-                    out.append(f"soil_params_file={os.path.abspath(self.local_soil_path)}\n")
-                else:
-                    out.append(line)
-            with open(cfg_path, "w") as f:
-                f.writelines(out)
+        for soil_ctx in self.soil_contexts:
+            soil_ctx.ensure_local_soil()
 
     def read_soil_lines(self) -> List[str]:
-        if self._soil_lines_cache is not None:
-            return self._soil_lines_cache
-        if not os.path.isfile(self.local_soil_path):
-            raise FileNotFoundError(f"Local soil file not found: {self.local_soil_path}")
-        with open(self.local_soil_path, "r") as f:
-            self._soil_lines_cache = f.readlines()
-        return self._soil_lines_cache
+        return self.soil_contexts[0].read_soil_lines()
 
     def write_soil_lines(self, lines: List[str]):
-        with open(self.local_soil_path, "w") as f:
-            f.writelines(lines)
-        self._soil_lines_cache = lines
+        self.soil_contexts[0].write_soil_lines(lines)
 
 def read_layer_thickness_baseline(tile_ctx: TileContext) -> List[float]:
     """
@@ -796,30 +856,39 @@ def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
             f.writelines(out)
 
 def apply_soil_param(tile_ctx: TileContext, layer_1based: int, param: str, value: float):
-    # Per your earlier script's behavior, skip silently if the layer is not present
-    if layer_1based < 1 or layer_1based > tile_ctx.n_layers:
+    # Preserve the existing behavior of skipping a requested layer when it is absent.
+    if layer_1based < 1:
         return
 
     tile_ctx.ensure_local_soil()
-    soil_lines = tile_ctx.read_soil_lines()
-    soil_type = tile_ctx.soil_types[layer_1based - 1]
-    row = parse_soil_table_row(soil_lines[soil_type])
+    for soil_ctx in tile_ctx.soil_contexts:
+        if layer_1based > soil_ctx.n_layers:
+            continue
 
-    if param == "log_alpha":
-        alpha = 10 ** float(value)
-        row.values[2] = str(alpha)
-    elif param == "n":
-        row.values[3] = str(float(value))
-    elif param == "log_Ks":
-        Ks = 10 ** float(value)
-        row.values[4] = str(Ks)
-    elif param == "theta_e":
-        row.values[1] = str(float(value))
-    else:
-        raise ValueError(f"Unknown soil param: {param}")
+        soil_lines = soil_ctx.read_soil_lines()
+        soil_type = soil_ctx.soil_types[layer_1based - 1]
+        if soil_type <= 0 or soil_type >= len(soil_lines):
+            raise IndexError(
+                f"CASAM soil type out of range in {soil_ctx.config_name}: "
+                f"layer={layer_1based}, soil_type={soil_type}, soil table rows={len(soil_lines)}"
+            )
+        row = parse_soil_table_row(soil_lines[soil_type])
 
-    soil_lines[soil_type] = format_soil_table_row(row)
-    tile_ctx.write_soil_lines(soil_lines)
+        if param == "log_alpha":
+            alpha = 10 ** float(value)
+            row.values[2] = str(alpha)
+        elif param == "n":
+            row.values[3] = str(float(value))
+        elif param == "log_Ks":
+            Ks = 10 ** float(value)
+            row.values[4] = str(Ks)
+        elif param == "theta_e":
+            row.values[1] = str(float(value))
+        else:
+            raise ValueError(f"Unknown soil param: {param}")
+
+        soil_lines[soil_type] = format_soil_table_row(row)
+        soil_ctx.write_soil_lines(soil_lines)
 
 SOIL_TABLE_COLUMN_BY_PARAM = {
     "theta_r": 1,
@@ -855,41 +924,49 @@ def calibrated_soil_columns_for_layer(specs: List[ParamSpec], layer_1based: int)
 
 def mirror_second_layer_uncalibrated_soil_params(tile_ctx: TileContext, specs: List[ParamSpec]):
     """
-    CASAM uses two soil layers but a shared soil table. For the second layer,
-    copy every non-calibrated soil-table parameter from the first layer after
-    particle parameters have been written, so any calibrated L1 value is mirrored
+    Within each catchment-specific soil table, copy every non-calibrated
+    soil-table parameter from the first layer to the second layer after particle
+    parameters have been written. Any calibrated L1 value is therefore mirrored
     unless the corresponding L2 parameter is explicitly calibrated.
     """
-    if tile_ctx.n_layers < 2:
-        return
-
-    top_soil_type = tile_ctx.soil_types[0]
-    second_soil_type = tile_ctx.soil_types[1]
-    if top_soil_type == second_soil_type:
-        return
-
     tile_ctx.ensure_local_soil()
-    soil_lines = tile_ctx.read_soil_lines()
-    if top_soil_type >= len(soil_lines) or second_soil_type >= len(soil_lines):
-        raise IndexError(
-            f"CASAM soil type out of range: L1={top_soil_type}, L2={second_soil_type}, "
-            f"soil table rows={len(soil_lines)}"
-        )
-
-    top_row = parse_soil_table_row(soil_lines[top_soil_type])
-    second_row = parse_soil_table_row(soil_lines[second_soil_type])
-    max_param_col = min(len(top_row.values), len(second_row.values))
-    if max_param_col < 1:
-        return
-
     calibrated_l2_cols = calibrated_soil_columns_for_layer(specs, layer_1based=2)
-    for col in range(1, max_param_col + 1):
-        if col in calibrated_l2_cols:
-            continue
-        second_row.values[col - 1] = top_row.values[col - 1]
 
-    soil_lines[second_soil_type] = format_soil_table_row(second_row)
-    tile_ctx.write_soil_lines(soil_lines)
+    for soil_ctx in tile_ctx.soil_contexts:
+        if soil_ctx.n_layers < 2:
+            continue
+
+        top_soil_type = soil_ctx.soil_types[0]
+        second_soil_type = soil_ctx.soil_types[1]
+        if top_soil_type == second_soil_type:
+            continue
+
+        soil_lines = soil_ctx.read_soil_lines()
+        if (
+            top_soil_type <= 0
+            or second_soil_type <= 0
+            or top_soil_type >= len(soil_lines)
+            or second_soil_type >= len(soil_lines)
+        ):
+            raise IndexError(
+                f"CASAM soil type out of range in {soil_ctx.config_name}: "
+                f"L1={top_soil_type}, L2={second_soil_type}, "
+                f"soil table rows={len(soil_lines)}"
+            )
+
+        top_row = parse_soil_table_row(soil_lines[top_soil_type])
+        second_row = parse_soil_table_row(soil_lines[second_soil_type])
+        max_param_col = min(len(top_row.values), len(second_row.values))
+        if max_param_col < 1:
+            continue
+
+        for col in range(1, max_param_col + 1):
+            if col in calibrated_l2_cols:
+                continue
+            second_row.values[col - 1] = top_row.values[col - 1]
+
+        soil_lines[second_soil_type] = format_soil_table_row(second_row)
+        soil_ctx.write_soil_lines(soil_lines)
 
 def apply_theta_e_1(tile_ctx: TileContext, value: float):
     apply_soil_param(tile_ctx, layer_1based=1, param="theta_e", value=float(value))
