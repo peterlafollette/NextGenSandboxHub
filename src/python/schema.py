@@ -81,6 +81,12 @@ def get_schema_model_attributes(gdf_model):
         if 'aspect_c_mean' in d: ##for hydrofabric v 2.1.1
             df['aspect_mean'] = d
 
+        if d == 'terrain_slope':
+            df['terrain_slope'] = d
+
+        if d == 'terrain_aspect':
+            df['terrain_aspect'] = d
+
         if 'twi'in d:
             if 'twi_dist' in d:
                 df['twi_dist'] = d

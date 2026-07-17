@@ -1,3 +1,6 @@
+flat_domain = false ! Sandbox only: true sets slope/aspect to zero; false uses divide-attribute values
+! and adjusts incoming shortwave radiation to slope and aspect.
+
 &timing                                   ! and input/output paths
   dt                 = 3600.0             ! timestep [seconds]
   startdate          = "201610010000"             ! UTC time start of simulation (YYYYMMDDhhmm)
@@ -28,7 +31,7 @@
 / 
 
 &model_options                                   ! see OptionsType.f90 for details
-  precip_phase_option               = 6
+  precip_phase_option               = 1
   snow_albedo_option                = 1
   dynamic_veg_option                = 4
   runoff_option                     = 3

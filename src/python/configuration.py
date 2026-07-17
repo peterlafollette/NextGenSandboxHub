@@ -115,6 +115,14 @@ class ConfigurationGenerator:
         gdf_soil['elevation_mean'] = gdf_soil[params['elevation_mean']].fillna(4)
         gdf_soil['slope_mean'] = gdf_soil[params['slope_mean']].fillna(1.0)
         gdf_soil['aspect_mean'] = gdf_soil[params['aspect_mean']].fillna(1.0)
+        if 'terrain_slope' in params:
+            gdf_soil['terrain_slope'] = pd.to_numeric(
+                gdf_soil[params['terrain_slope']], errors='coerce'
+            )
+        if 'terrain_aspect' in params:
+            gdf_soil['terrain_aspect'] = pd.to_numeric(
+                gdf_soil[params['terrain_aspect']], errors='coerce'
+            )
 
         if self.schema_type == 'dangermond':
             gdf_soil['elevation_mean'] = gdf_soil['elevation_mean'] / 100.0
@@ -140,6 +148,10 @@ class ConfigurationGenerator:
         gdf['elevation_mean'] = gdf_soil['elevation_mean'].copy()
         gdf['slope_mean'] = gdf_soil['slope_mean'].copy()
         gdf['aspect_mean'] = gdf_soil['aspect_mean'].copy()
+        if 'terrain_slope' in gdf_soil:
+            gdf['terrain_slope'] = gdf_soil['terrain_slope'].copy()
+        if 'terrain_aspect' in gdf_soil:
+            gdf['terrain_aspect'] = gdf_soil['terrain_aspect'].copy()
 
         mask = gdf['soil_b'].gt(0.0)
         min_value = gdf['soil_b'][mask].min()
@@ -163,6 +175,64 @@ class ConfigurationGenerator:
 
         return gdf, catids
 
+    @staticmethod
+    def _extract_nom_flat_domain(lines):
+        """Return the terrain multiplier and remove the Sandbox-only directive."""
+        values = []
+        config_lines = []
+
+        for line_number, line in enumerate(lines, start=1):
+            setting = line.split("!", maxsplit=1)[0].strip()
+            key, separator, value = setting.partition("=")
+
+            if separator and key.strip().lower() == "flat_domain":
+                value = value.strip().lower()
+                if value not in {"true", "false"}:
+                    raise ValueError(
+                        "NOM basefile flat_domain must be either true or false "
+                        f"(line {line_number}), provided: {value!r}"
+                    )
+                values.append(value)
+                continue
+
+            config_lines.append(line)
+
+        if not values:
+            raise ValueError("NOM basefile must define flat_domain = true or false")
+        if len(values) > 1:
+            raise ValueError("NOM basefile defines flat_domain more than once")
+
+        terrain_multiplier = 0.0 if values[0] == "true" else 1.0
+        return terrain_multiplier, config_lines
+
+    @staticmethod
+    def _nom_terrain_values(gdf, cat_name, terrain_multiplier):
+        if terrain_multiplier == 0.0:
+            return 0.0, 0.0
+
+        required = ("terrain_slope", "terrain_aspect")
+        missing = [name for name in required if name not in gdf.columns]
+        if missing:
+            raise ValueError(
+                "Nonflat NOM configuration requires explicit divide-attribute "
+                f"field(s) {', '.join(missing)}; missing for {cat_name}"
+            )
+
+        terrain_slope = float(gdf.loc[cat_name, "terrain_slope"])
+        terrain_aspect = float(gdf.loc[cat_name, "terrain_aspect"])
+        if not math.isfinite(terrain_slope) or not 0.0 <= terrain_slope <= 90.0:
+            raise ValueError(
+                f"Invalid terrain_slope for {cat_name}: {terrain_slope!r}; "
+                "expected finite degrees in [0, 90]"
+            )
+        if not math.isfinite(terrain_aspect) or not 0.0 <= terrain_aspect <= 360.0:
+            raise ValueError(
+                f"Invalid terrain_aspect for {cat_name}: {terrain_aspect!r}; "
+                "expected finite degrees clockwise from north in [0, 360]"
+            )
+
+        return terrain_slope, terrain_aspect
+
     def write_nom_input_files(self):
         nom_dir = os.path.join(self.output_dir,"configs/noahowp")
         self.create_directory(nom_dir)
@@ -182,7 +252,7 @@ class ConfigurationGenerator:
 
         start_time = pd.Timestamp(self.simulation_time['start_time']).strftime("%Y%m%d%H%M")
         end_time = pd.Timestamp(self.simulation_time['end_time']).strftime("%Y%m%d%H%M")
-        flat_domain = 0.0
+        terrain_multiplier, lines = self._extract_nom_flat_domain(lines)
 
         for catID in self.catids:
             cat_name = 'cat-' + str(catID)
@@ -190,8 +260,9 @@ class ConfigurationGenerator:
             centroid_y = str(self.gdf['geometry'][cat_name].centroid.y)
             soil_type = str(self.gdf.loc[cat_name]['ISLTYP'])
             veg_type = str(self.gdf.loc[cat_name]['IVGTYP'])
-            aspect = str(self.gdf.loc[cat_name]['aspect_mean'] * flat_domain)
-            terrain_slope = str(self.gdf.loc[cat_name]['slope_mean'] * flat_domain)
+            terrain_slope, aspect = self._nom_terrain_values(
+                self.gdf, cat_name, terrain_multiplier
+            )
 
             fname_nom = f'noahowp_config_{cat_name}.input'
             nom_file = os.path.join(nom_dir, fname_nom)
