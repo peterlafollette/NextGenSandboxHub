@@ -757,6 +757,7 @@ class ConfigurationGenerator:
             'max_valid_soil_types=12',
             'wilting_point_psi=15495.0[cm]',
             'field_capacity_psi=340.9[cm]',
+            'root_zone_depth=150.0[cm]',
             'adaptive_timestep=true',
             'giuh_ordinates=',
             'a=0.0001',
@@ -768,9 +769,11 @@ class ConfigurationGenerator:
             f'initial_CR_fast_storage={cr_fast_discharge_threshold_cm}[cm]',
             'PET_affects_precip=false',
             'spf_factor=0.6',
-            'free_drainage_enabled=true',
-            'free_drainage_to_CR=true',
-            'allow_flux_caching=true'
+            'TO_enabled=true',
+            'mobile_groundwater_level=true',
+            'lower_bdy_flux_to_CR=true',
+            'free_drainage_enabled=false',
+            'allow_flux_caching=false'
         ]
 
         if sft_coupled:
