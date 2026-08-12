@@ -770,6 +770,7 @@ class ConfigurationGenerator:
             'PET_affects_precip=false',
             'spf_factor=0.6',
             'TO_enabled=true',
+            'initial_wetting_fronts_per_layer=4',
             'mobile_groundwater_level=true',
             'lower_bdy_flux_to_CR=true',
             'free_drainage_enabled=false',
