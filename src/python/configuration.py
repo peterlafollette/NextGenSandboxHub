@@ -740,6 +740,8 @@ class ConfigurationGenerator:
 
         sft_calib = "False"
         soil_z = "10.0,15.0,18.0,23.0,29.0,36.0,44.0,55.0,69.0,86.0,107.0,134.0,166.0,207.0,258.0,322.0,401.0,500.0,600.0"
+        ponded_depth_max_cm = 0.0
+        cr_fast_discharge_threshold_cm = 5.0
 
         casam_params_base = [
             'verbosity=none',
@@ -749,7 +751,7 @@ class ConfigurationGenerator:
             'timestep=300[sec]',
             'endtime=1000000000.0[d]',
             'forcing_resolution=3600[sec]',
-            'ponded_depth_max=0[cm]',
+            f'ponded_depth_max={ponded_depth_max_cm}[cm]',
             'use_closed_form_G=true',
             'layer_soil_type=',
             'max_valid_soil_types=12',
@@ -762,6 +764,8 @@ class ConfigurationGenerator:
             'frac_to_GW=0.4',
             'lateral_flow_psi_threshold=500.0',
             'lateral_flow_factor=1.0',
+            f'CR_fast_discharge_threshold={cr_fast_discharge_threshold_cm}[cm]',
+            f'initial_CR_fast_storage={cr_fast_discharge_threshold_cm}[cm]',
             'PET_affects_precip=false',
             'spf_factor=0.6',
             'free_drainage_enabled=true',

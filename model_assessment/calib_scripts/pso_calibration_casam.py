@@ -181,6 +181,8 @@ CALIBRATION_REQUEST = [
     {"kind": "lasam", "param": "frac_to_GW"},
     {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
     {"kind": "lasam", "param": "log10_lateral_flow_factor"},
+    {"kind": "lasam", "param": "ponded_depth_max"},
+    {"kind": "lasam", "param": "CR_fast_discharge_threshold"},
     {"kind": "lasam", "param": "field_capacity_psi"},
     {"kind": "lasam", "param": "spf_factor"},
     {"kind": "lasam", "param": "theta_e_1"},
@@ -217,6 +219,8 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
         "frac_to_GW": (1e-4, 1.0 - 1e-4),
         "log10_lateral_flow_psi_threshold": (0.0, 3.0),
         "log10_lateral_flow_factor": (-3.0, 2.0),
+        "ponded_depth_max": (0.0, 5.0),  # cm, linear optimizer space
+        "CR_fast_discharge_threshold": (0.1, 20.0),  # cm, linear optimizer space
         "field_capacity_psi": (10.0, 500.0),
         "spf_factor": (0.1, 1.0),
         "theta_e_1": (0.3, 0.6),
@@ -727,6 +731,8 @@ def read_lasam_scalar_baseline(
             "frac_to_GW",
             "log10_lateral_flow_psi_threshold",
             "log10_lateral_flow_factor",
+            "ponded_depth_max",
+            "CR_fast_discharge_threshold",
             "field_capacity_psi",
             "spf_factor",
         }
@@ -753,6 +759,10 @@ def read_lasam_scalar_baseline(
         if lateral_flow_factor <= 0.0:
             raise ValueError("CASAM lateral_flow_factor must be > 0 for log10 calibration")
         values["log10_lateral_flow_factor"] = math.log10(lateral_flow_factor)
+    if "ponded_depth_max" in requested:
+        values["ponded_depth_max"] = _get_float("ponded_depth_max=")
+    if "CR_fast_discharge_threshold" in requested:
+        values["CR_fast_discharge_threshold"] = _get_float("CR_fast_discharge_threshold=")
     if "field_capacity_psi" in requested:
         values["field_capacity_psi"] = _get_float("field_capacity_psi=")
     if "spf_factor" in requested:
@@ -809,28 +819,32 @@ def read_nom_baseline(tile_ctx: TileContext) -> Dict[str, float]:
 def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
     if param == "log10_a":
         a = 10 ** float(value)
-        key = "a="
-        out_line = f"a={a}\n"
+        replacements = [("a=", f"a={a}\n")]
     elif param == "b":
-        key = "b="
-        out_line = f"b={float(value)}\n"
+        replacements = [("b=", f"b={float(value)}\n")]
     elif param == "frac_to_GW":
-        key = "frac_to_GW="
-        out_line = f"frac_to_GW={float(value)}\n"
+        replacements = [("frac_to_GW=", f"frac_to_GW={float(value)}\n")]
     elif param == "log10_lateral_flow_psi_threshold":
         lateral_flow_psi_threshold = 10 ** float(value)
-        key = "lateral_flow_psi_threshold="
-        out_line = f"lateral_flow_psi_threshold={lateral_flow_psi_threshold}\n"
+        replacements = [
+            ("lateral_flow_psi_threshold=", f"lateral_flow_psi_threshold={lateral_flow_psi_threshold}\n")
+        ]
     elif param == "log10_lateral_flow_factor":
         lateral_flow_factor = 10 ** float(value)
-        key = "lateral_flow_factor="
-        out_line = f"lateral_flow_factor={lateral_flow_factor}\n"
+        replacements = [("lateral_flow_factor=", f"lateral_flow_factor={lateral_flow_factor}\n")]
+    elif param == "ponded_depth_max":
+        replacements = [("ponded_depth_max=", f"ponded_depth_max={float(value)}[cm]\n")]
+    elif param == "CR_fast_discharge_threshold":
+        threshold = float(value)
+        # Begin each run at its calibrated fast-reservoir discharge threshold.
+        replacements = [
+            ("CR_fast_discharge_threshold=", f"CR_fast_discharge_threshold={threshold}[cm]\n"),
+            ("initial_CR_fast_storage=", f"initial_CR_fast_storage={threshold}[cm]\n"),
+        ]
     elif param == "field_capacity_psi":
-        key = "field_capacity_psi="
-        out_line = f"field_capacity_psi={float(value)}[cm]\n"
+        replacements = [("field_capacity_psi=", f"field_capacity_psi={float(value)}[cm]\n")]
     elif param == "spf_factor":
-        key = "spf_factor="
-        out_line = f"spf_factor={float(value)}\n"
+        replacements = [("spf_factor=", f"spf_factor={float(value)}\n")]
     else:
         raise ValueError(f"Unknown LASAM scalar param: {param}")
 
@@ -839,15 +853,21 @@ def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
         with open(cfg_path, "r") as f:
             lines = f.readlines()
         out = []
-        changed = False
+        changed = set()
         for line in lines:
-            if line.strip().startswith(key):
-                out.append(out_line)
-                changed = True
-            else:
+            replacement = next(
+                ((key, out_line) for key, out_line in replacements if line.strip().startswith(key)),
+                None,
+            )
+            if replacement is None:
                 out.append(line)
-        if not changed:
+                continue
+            key, out_line = replacement
             out.append(out_line)
+            changed.add(key)
+        for key, out_line in replacements:
+            if key not in changed:
+                out.append(out_line)
         with open(cfg_path, "w") as f:
             f.writelines(out)
 
