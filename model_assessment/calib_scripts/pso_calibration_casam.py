@@ -162,13 +162,9 @@ nom_param_bounds_by_name = dict(zip(nom_param_names, nom_param_bounds))
 # =========================
 # User-editable. Controls optimizer search space.
 #
-# Default request calibrates CASAM soil and selected scalar parameters:
-# - soil: log_alpha for layer 1; log_Ks for layers 1 and 2
-# - scalars: field_capacity_psi and theta_e_1
-# - Optional legacy CASAM scalars can be uncommented if the corresponding config
-#   lines are present.
-# - Optional CASAM lateral-flow scalars can be uncommented; they are calibrated
-#   in log10 space and applied model-wide.
+# Default request calibrates CASAM soil parameters in both layers and the
+# available model-wide CASAM scalar parameters. Parameters represented as
+# log10 values are transformed back to actual values before being written.
 #
 # If NOM exists and DEFAULT_INCLUDE_NOM_IF_PRESENT=True, upstream NOM params are auto-appended.
 #
@@ -180,13 +176,13 @@ CALIBRATION_REQUEST = [
     {"kind": "soil", "param": "n", "layers": [1, 2]},
     {"kind": "soil", "param": "log_Ks", "layers": [1, 2]},
 
-    # {"kind": "lasam", "param": "log10_a"},
-    # {"kind": "lasam", "param": "b"},
-    # {"kind": "lasam", "param": "frac_to_GW"},
-    # {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
-    # {"kind": "lasam", "param": "log10_lateral_flow_factor"},
+    {"kind": "lasam", "param": "log10_a"},
+    {"kind": "lasam", "param": "b"},
+    {"kind": "lasam", "param": "frac_to_GW"},
+    {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
+    {"kind": "lasam", "param": "log10_lateral_flow_factor"},
     {"kind": "lasam", "param": "field_capacity_psi"},
-    # {"kind": "lasam", "param": "spf_factor"},
+    {"kind": "lasam", "param": "spf_factor"},
     {"kind": "lasam", "param": "theta_e_1"},
     #{"kind": "lasam", "param": "layer_thickness", "layers": [1, 2]},
 ]
