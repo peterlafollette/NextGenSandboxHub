@@ -16,6 +16,7 @@ import yaml
 import multiprocessing
 import platform
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from src.python import configuration
 
@@ -52,6 +53,17 @@ def _resolve_realization(json_dir: Path) -> Path:
     if not cands:
         raise FileNotFoundError(f"No realization JSON found in {json_dir}")
     return cands[0]
+
+
+def _write_ngen_run_metadata(path, **metadata):
+    """Record the native NGen result only when failure-bundle capture requests it."""
+    if not path:
+        return
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(metadata, indent=2))
+    os.replace(temporary, destination)
 
 
 class Runner:
@@ -174,7 +186,40 @@ class Runner:
                 run_cmd = f'PYTHONEXECUTABLE=$(which python) {run_cmd}'
 
             print(f"Run command: {run_cmd}", flush=True)
-            result = subprocess.call(run_cmd, shell=True)
+            metadata_path = os.environ.get("NGEN_RUN_METADATA_PATH")
+            if not metadata_path:
+                # Preserve the established execution path when bundle capture is off.
+                result = subprocess.call(run_cmd, shell=True)
+            else:
+                started = datetime.now(timezone.utc)
+                try:
+                    result = subprocess.call(run_cmd, shell=True)
+                except Exception as error:
+                    _write_ngen_run_metadata(
+                        metadata_path,
+                        command=run_cmd,
+                        ngen_executable=str(Path(ngen_exe).resolve()),
+                        gpkg_file=str(gpkg_file.resolve()),
+                        realization_path=str(realization_path.resolve()),
+                        cwd=str(work_dir.resolve()),
+                        started_at_utc=started.isoformat(),
+                        ended_at_utc=datetime.now(timezone.utc).isoformat(),
+                        exception=repr(error),
+                    )
+                    raise
+                signal_number = -result if result < 0 else result - 128 if result >= 128 else None
+                _write_ngen_run_metadata(
+                    metadata_path,
+                    command=run_cmd,
+                    ngen_executable=str(Path(ngen_exe).resolve()),
+                    gpkg_file=str(gpkg_file.resolve()),
+                    realization_path=str(realization_path.resolve()),
+                    cwd=str(work_dir.resolve()),
+                    started_at_utc=started.isoformat(),
+                    ended_at_utc=datetime.now(timezone.utc).isoformat(),
+                    returncode=result,
+                    signal=signal_number,
+                )
             if result != 0:
                 raise RuntimeError(f"ngen failed for basin {id} with exit code {result}")
 

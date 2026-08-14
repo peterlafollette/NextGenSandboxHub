@@ -44,6 +44,17 @@ OUTPUT_RETAIN_MODE="${OUTPUT_RETAIN_MODE:-compact}"
 KEEP_BEST_QLAT="${KEEP_BEST_QLAT:-false}"
 COPY_FAILED_OUTPUTS="${COPY_FAILED_OUTPUTS:-true}"
 COMPRESS_JOB_LOG="${COMPRESS_JOB_LOG:-true}"
+CAPTURE_FAILURE_BUNDLES="${CAPTURE_FAILURE_BUNDLES:-false}"
+FAILURE_BUNDLE_INCLUDE_FORCING="${FAILURE_BUNDLE_INCLUDE_FORCING:-false}"
+
+case "$CAPTURE_FAILURE_BUNDLES:$FAILURE_BUNDLE_INCLUDE_FORCING" in
+    true:true|true:false|false:true|false:false)
+        ;;
+    *)
+        echo "CAPTURE_FAILURE_BUNDLES and FAILURE_BUNDLE_INCLUDE_FORCING must be true or false." >&2
+        exit 1
+        ;;
+esac
 
 case "$CALIBRATION_ALGORITHM" in
     pso|dds)
@@ -153,6 +164,7 @@ TMP_COMPACT_GAGE_DIR="$NODE_TMP/compact/$VARIANT_LABEL/$GAGE_ID"
 DEST_VARIANT_DIR="$DEST_OUTPUT_ROOT/$VARIANT_LABEL"
 DEST_VARIANT_GAGE_DIR="$DEST_VARIANT_DIR/$GAGE_ID"
 FAILED_DEST_GAGE_DIR="$DEST_VARIANT_DIR/_failed/${GAGE_ID}_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+FAILURE_BUNDLE_ROOT="${FAILURE_BUNDLE_ROOT:-$DEST_VARIANT_DIR/failure_bundles}"
 
 mkdir -p "$TMP_INPUT_DIR" "$TMP_VARIANT_GAGE_DIR/logging" "$DEST_VARIANT_DIR"
 printf 'gage_id,num_divides\n%s,0\n' "$GAGE_ID" > "$TMP_BASIN_CSV"
@@ -226,6 +238,9 @@ echo "time windows:            spinup=$SPINUP_START cal=$CAL_START..$CAL_END val
 echo "output retain mode:      $OUTPUT_RETAIN_MODE"
 echo "keep best qlat:          $KEEP_BEST_QLAT"
 echo "copy failed outputs:     $COPY_FAILED_OUTPUTS"
+echo "capture failure bundles: $CAPTURE_FAILURE_BUNDLES"
+echo "failure bundle root:     $FAILURE_BUNDLE_ROOT"
+echo "copy forcing in bundle:  $FAILURE_BUNDLE_INCLUDE_FORCING"
 echo
 
 export NGSH_ROOT
@@ -239,6 +254,9 @@ export NGEN_JOB_CORES="${SLURM_CPUS_PER_TASK:-1}"
 export NGEN_TROUTE_CPU_POOL=1
 export OMP_NUM_THREADS=1
 export NGEN_SANDBOX_CONFIG="$SANDBOX_CONFIG"
+export CAPTURE_FAILURE_BUNDLES
+export FAILURE_BUNDLE_INCLUDE_FORCING
+export FAILURE_BUNDLE_ROOT
 
 echo "Staging selected gage input to node-local tmp..."
 TRANSFER_SOURCE_BASE="$SHARED_INPUT_DIR" \

@@ -59,6 +59,7 @@ from model_assessment.util.update_NOM import (
     update_noahowp_model_params,
     update_noahowp_time_window,
 )
+from model_assessment.util.failure_bundle import capture_failure_bundle, env_flag
 from model_assessment.configs import path_config as cfg
 
 # =========================
@@ -302,6 +303,84 @@ def runtime_cpu_pool(default: int = 1) -> int:
 def pwork(root: str, gage_id: str, pid: int) -> str:
     """Particle workspace root created by `sandbox.py -conf --concurrent-particles`."""
     return os.path.join(gage_output_dir(root, gage_id), "particles", f"p{pid}")
+
+
+def run_particle_hydrology(
+    *,
+    gage_id: str,
+    particle_idx: int,
+    tile_idx: int,
+    tile_root: str,
+    work_root: str,
+    realization_path: str,
+    sandbox_config: str,
+    env: dict,
+    iteration,
+    params,
+    param_names,
+    stage: str,
+) -> int:
+    """Run hydrology unchanged unless opt-in failure-bundle capture is enabled."""
+    command = [sys.executable, sandbox_path, "-i", sandbox_config, "-run", "--gage_id", gage_id]
+    if not env_flag("CAPTURE_FAILURE_BUNDLES"):
+        return subprocess.call(command, cwd=tile_root, env=env)
+
+    diagnostics = Path(work_root) / ".failure_capture"
+    shutil.rmtree(diagnostics, ignore_errors=True)
+    diagnostics.mkdir(parents=True)
+    ngen_log = diagnostics / "ngen.log"
+    ngen_metadata = diagnostics / "ngen_run_metadata.json"
+    capture_env = env.copy()
+    capture_env["NGEN_RUN_METADATA_PATH"] = str(ngen_metadata)
+
+    with ngen_log.open("w") as log:
+        result = subprocess.call(
+            command,
+            cwd=tile_root,
+            env=capture_env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+
+    if result != 0:
+        bundle_root = os.environ.get(
+            "FAILURE_BUNDLE_ROOT",
+            os.path.join(gage_output_dir(tile_root, gage_id), "failure_bundles"),
+        )
+        try:
+            bundle = capture_failure_bundle(
+                destination_root=bundle_root,
+                gage_id=gage_id,
+                iteration=iteration,
+                particle_idx=particle_idx,
+                tile_idx=tile_idx,
+                stage=stage,
+                work_root=work_root,
+                realization_path=realization_path,
+                params=params,
+                param_names=param_names,
+                sandbox_config=sandbox_config,
+                sandbox_returncode=result,
+                ngen_log_path=ngen_log,
+                ngen_metadata_path=ngen_metadata,
+                project_root=project_root,
+                include_forcing=env_flag("FAILURE_BUNDLE_INCLUDE_FORCING"),
+            )
+            print(f"[failure-bundle] captured {bundle}", flush=True)
+        except Exception as error:
+            # Diagnostics must never replace the original hydrology failure.
+            print(f"[failure-bundle] capture failed: {error}", flush=True)
+
+        try:
+            tail = ngen_log.read_text(errors="replace").splitlines()[-80:]
+            if tail:
+                print("[failure-bundle] final isolated hydrology log lines:", flush=True)
+                print("\n".join(tail), flush=True)
+        except OSError:
+            pass
+
+    shutil.rmtree(diagnostics, ignore_errors=True)
+    return result
 
 def resolve_div_dir(tile_root: str, gage_id: str, pid: int) -> str:
     """Return the directory that actually contains CSV divide outputs for this tile & particle.
@@ -1203,6 +1282,10 @@ def objective_function_tiled(args):
         *extra  # (iteration, param_names)
     ) = args
 
+    iteration = extra[0] if extra else None
+    param_names = extra[1] if len(extra) > 1 else None
+    bundle_params = np.asarray(params).copy()
+
     check_for_stop_signal_or_low_disk()
     n_tiles = len(model_roots_list)
 
@@ -1273,10 +1356,19 @@ def objective_function_tiled(args):
         env["NGEN_PARTICLE_ID"] = str(particle_idx)
         env["NGEN_REALIZATION_PATH"] = realization_path
 
-        ret = subprocess.call(
-            [sys.executable, sandbox_path, "-i", tile_sandbox_config, "-run", "--gage_id", gage_id],
-            cwd=tile_root,
+        ret = run_particle_hydrology(
+            gage_id=gage_id,
+            particle_idx=particle_idx,
+            tile_idx=tile_idx,
+            tile_root=tile_root,
+            work_root=work_root,
+            realization_path=realization_path,
+            sandbox_config=tile_sandbox_config,
             env=env,
+            iteration=iteration,
+            params=bundle_params,
+            param_names=param_names,
+            stage="objective",
         )
         if ret != 0:
             raise RuntimeError(f"Hydrology failed: gage {gage_id} | pid {particle_idx} | tile {tile_idx}")
@@ -1686,10 +1778,19 @@ class PSO:
             env["NGEN_PARTICLE_ID"] = str(best_pid)
             env["NGEN_REALIZATION_PATH"] = realization_path
 
-            ret = subprocess.call(
-                [sys.executable, sandbox_path, "-i", tile_sandbox_config, "-run", "--gage_id", self.gage_id],
-                cwd=tile_root,
-                env=env
+            ret = run_particle_hydrology(
+                gage_id=self.gage_id,
+                particle_idx=best_pid,
+                tile_idx=tile_idx,
+                tile_root=tile_root,
+                work_root=work_root,
+                realization_path=realization_path,
+                sandbox_config=tile_sandbox_config,
+                env=env,
+                iteration="FINAL",
+                params=self.global_best_position,
+                param_names=self.param_names,
+                stage="final",
             )
             if ret != 0:
                 raise RuntimeError(f"Final hydrology failed: gage {self.gage_id} | tile {tile_idx}")

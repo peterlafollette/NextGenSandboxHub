@@ -59,6 +59,9 @@ export OUTPUT_RETAIN_MODE="${OUTPUT_RETAIN_MODE:-compact}"
 export KEEP_BEST_QLAT="${KEEP_BEST_QLAT:-false}"
 export COPY_FAILED_OUTPUTS="${COPY_FAILED_OUTPUTS:-true}"
 export COMPRESS_JOB_LOG="${COMPRESS_JOB_LOG:-true}"
+# Opt in to exact failed-particle snapshots; false preserves the current workflow.
+export CAPTURE_FAILURE_BUNDLES="${CAPTURE_FAILURE_BUNDLES:-false}"
+export FAILURE_BUNDLE_INCLUDE_FORCING="${FAILURE_BUNDLE_INCLUDE_FORCING:-false}"
 
 if [ ! -f "$BASIN_CSV" ]; then
     echo "Missing BASIN_CSV: $BASIN_CSV" >&2
@@ -92,6 +95,8 @@ Destination output root:      $DEST_MODEL_ROOT
 Output retain mode:           $OUTPUT_RETAIN_MODE
 Keep best qlat:               $KEEP_BEST_QLAT
 Copy failed outputs:          $COPY_FAILED_OUTPUTS
+Capture failure bundles:      $CAPTURE_FAILURE_BUNDLES
+Copy forcing into bundles:    $FAILURE_BUNDLE_INCLUDE_FORCING
 EOF
 
 bash "$NGSH_ROOT/slurm/submit_calibration_arrays.sh"
