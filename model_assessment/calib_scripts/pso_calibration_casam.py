@@ -190,6 +190,30 @@ CALIBRATION_REQUEST = [
     #{"kind": "lasam", "param": "layer_thickness", "layers": [1, 2]},
 ]
 
+# Opt-in request for CASAM_MODE=dual_fd. The fracture-domain soil properties
+# and A_Gamma are spatially uniform, while matrix properties retain the
+# existing per-layer treatment.
+DUAL_FD_CALIBRATION_REQUEST = [
+    {"kind": "soil", "param": "log_alpha", "layers": [1, 2]},
+    {"kind": "soil", "param": "n", "layers": [1, 2]},
+    {"kind": "soil", "param": "log_Ks", "layers": [1, 2]},
+
+    {"kind": "fracture_soil", "param": "log_alpha_f"},
+    {"kind": "fracture_soil", "param": "n_f"},
+    {"kind": "fracture_soil", "param": "theta_e_f"},
+    {"kind": "fracture_soil", "param": "log_Ks_f"},
+    {"kind": "mfi", "param": "log10_A_Gamma"},
+    {"kind": "dual", "param": "frac_to_pref"},
+    {"kind": "dual", "param": "ratio_fracture_vol_to_total_vol"},
+
+    {"kind": "lasam", "param": "log10_a"},
+    {"kind": "lasam", "param": "b"},
+    {"kind": "lasam", "param": "log10_lateral_flow_psi_threshold"},
+    {"kind": "lasam", "param": "log10_lateral_flow_factor"},
+    {"kind": "lasam", "param": "field_capacity_psi"},
+    {"kind": "lasam", "param": "theta_e_1"},
+]
+
 # If True and NOM exists in a tile workspace, NOM parameters are included by default
 # (NOM-off => hydrology-only request; NOM-on => hydrology request plus upstream NOM knobs)
 DEFAULT_INCLUDE_NOM_IF_PRESENT = True
@@ -213,6 +237,19 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
         "log_Ks": (-4.0, 2.0),
         # Optional future:
         # "theta_e": (0.3, 0.6),
+    },
+    "fracture_soil": {
+        "log_alpha_f": (-3.0, 0.0),
+        "n_f": (2.0, 5.0),
+        "theta_e_f": (0.3, 0.8),
+        "log_Ks_f": (-1.0, 4.0),
+    },
+    "mfi": {
+        "log10_A_Gamma": (-6.0, 0.0),
+    },
+    "dual": {
+        "frac_to_pref": (0.0, 1.0),
+        "ratio_fracture_vol_to_total_vol": (1e-4, 0.9999),
     },
     "lasam": {
         "log10_a": (-8.0, -1.0),
@@ -577,6 +614,7 @@ class CatchmentSoilContext:
     soil_types: List[int]
     src_soil_path: str
     local_soil_path: str
+    value_count: int = 5
     _soil_lines_cache: Optional[List[str]] = None
 
     @property
@@ -595,7 +633,7 @@ class CatchmentSoilContext:
         out = []
         found_soil_path = False
         for line in lines:
-            if line.strip().startswith("soil_params_file"):
+            if line.strip().startswith("soil_params_file="):
                 out.append(f"soil_params_file={os.path.abspath(self.local_soil_path)}\n")
                 found_soil_path = True
             else:
@@ -621,18 +659,20 @@ class CatchmentSoilContext:
         self._soil_lines_cache = lines
 
 SOIL_TABLE_VALUE_COUNT = 5
+DUAL_SOIL_TABLE_VALUE_COUNT = 10
+MFI_TABLE_VALUE_COUNT = 4
 
-def parse_soil_table_row(line: str) -> SoilTableRow:
+def parse_soil_table_row(line: str, value_count: int = SOIL_TABLE_VALUE_COUNT) -> SoilTableRow:
     try:
         toks = shlex.split(line.strip())
     except ValueError as exc:
         raise ValueError(f"Could not parse CASAM soil table row: {line.rstrip()!r}") from exc
 
-    if len(toks) < SOIL_TABLE_VALUE_COUNT + 1:
+    if len(toks) < value_count + 1:
         raise ValueError(f"CASAM soil table row has too few columns: {line.rstrip()!r}")
 
-    values = toks[-SOIL_TABLE_VALUE_COUNT:]
-    texture = " ".join(toks[:-SOIL_TABLE_VALUE_COUNT]).strip()
+    values = toks[-value_count:]
+    texture = " ".join(toks[:-value_count]).strip()
     if not texture:
         raise ValueError(f"CASAM soil table row is missing texture name: {line.rstrip()!r}")
 
@@ -644,6 +684,52 @@ def parse_soil_table_row(line: str) -> SoilTableRow:
 def format_soil_table_row(row: SoilTableRow) -> str:
     texture = row.texture.replace('"', '\\"')
     return f'"{texture}"\t' + "\t".join(row.values) + "\n"
+
+@dataclass
+class CatchmentMfiContext:
+    """Particle-local matrix-fracture interface table for one CASAM config."""
+
+    config_name: str
+    config_path: str
+    src_mfi_path: str
+    local_mfi_path: str
+    _mfi_lines_cache: Optional[List[str]] = None
+
+    def ensure_local_mfi(self):
+        if not os.path.isfile(self.local_mfi_path):
+            if not os.path.isfile(self.src_mfi_path):
+                raise FileNotFoundError(f"soil_params_file_mfi not found: {self.src_mfi_path}")
+            shutil.copy2(self.src_mfi_path, self.local_mfi_path)
+
+        with open(self.config_path, "r") as f:
+            lines = f.readlines()
+
+        out = []
+        found_mfi_path = False
+        for line in lines:
+            if line.strip().startswith("soil_params_file_mfi"):
+                out.append(f"soil_params_file_mfi={os.path.abspath(self.local_mfi_path)}\n")
+                found_mfi_path = True
+            else:
+                out.append(line)
+        if not found_mfi_path:
+            raise ValueError(f"Missing soil_params_file_mfi in CASAM config: {self.config_path}")
+
+        with open(self.config_path, "w") as f:
+            f.writelines(out)
+
+    def read_mfi_lines(self) -> List[str]:
+        if self._mfi_lines_cache is None:
+            if not os.path.isfile(self.local_mfi_path):
+                raise FileNotFoundError(f"Local MFI file not found: {self.local_mfi_path}")
+            with open(self.local_mfi_path, "r") as f:
+                self._mfi_lines_cache = f.readlines()
+        return self._mfi_lines_cache
+
+    def write_mfi_lines(self, lines: List[str]):
+        with open(self.local_mfi_path, "w") as f:
+            f.writelines(lines)
+        self._mfi_lines_cache = lines
 
 class TileContext:
     """Workspace context for a single tile workspace at (tile_root, gage_id, particle_id)."""
@@ -663,10 +749,25 @@ class TileContext:
             raise FileNotFoundError(f"No {HYDRO_MODEL_LABEL} configs found in {self.lasam_cfg_dir}")
 
         self.soil_contexts: List[CatchmentSoilContext] = []
+        self.mfi_contexts: List[CatchmentMfiContext] = []
+        detected_dual_perm: Optional[bool] = None
         for cfg_name in self.lasam_cfg_files:
             cfg_path = os.path.join(self.lasam_cfg_dir, cfg_name)
             with open(cfg_path, "r") as f:
                 lines = f.readlines()
+
+            dual_line = next(
+                (line for line in lines if line.strip().startswith("dual_perm=")),
+                None,
+            )
+            dual_value = "false" if dual_line is None else dual_line.split("=", 1)[1].strip().lower()
+            if dual_value not in {"true", "false"}:
+                raise ValueError(f"Invalid dual_perm value in CASAM config: {cfg_path}")
+            config_dual_perm = dual_value == "true"
+            if detected_dual_perm is None:
+                detected_dual_perm = config_dual_perm
+            elif detected_dual_perm != config_dual_perm:
+                raise ValueError("CASAM configs in one workspace disagree about dual_perm")
 
             soil_types_line = next(
                 (line for line in lines if line.strip().startswith("layer_soil_type=")),
@@ -677,7 +778,7 @@ class TileContext:
             soil_types = list(map(int, soil_types_line.strip().split("=", 1)[1].split(",")))
 
             soil_file_line = next(
-                (line for line in lines if line.strip().startswith("soil_params_file")),
+                (line for line in lines if line.strip().startswith("soil_params_file=")),
                 None,
             )
             if soil_file_line is None:
@@ -699,8 +800,37 @@ class TileContext:
                     soil_types=soil_types,
                     src_soil_path=str(soil_path),
                     local_soil_path=local_soil_path,
+                    value_count=(
+                        DUAL_SOIL_TABLE_VALUE_COUNT
+                        if config_dual_perm
+                        else SOIL_TABLE_VALUE_COUNT
+                    ),
                 )
             )
+
+            if config_dual_perm:
+                mfi_file_line = next(
+                    (line for line in lines if line.strip().startswith("soil_params_file_mfi=")),
+                    None,
+                )
+                if mfi_file_line is None:
+                    raise ValueError(f"Missing soil_params_file_mfi in dual CASAM config: {cfg_path}")
+                mfi_file = mfi_file_line.split("=", 1)[1].strip()
+                mfi_path = Path(mfi_file)
+                if not mfi_path.is_absolute():
+                    mfi_path = (Path(cfg_path).parent / mfi_path).resolve()
+                mfi_suffix = mfi_path.suffix or ".dat"
+                self.mfi_contexts.append(
+                    CatchmentMfiContext(
+                        config_name=cfg_name,
+                        config_path=cfg_path,
+                        src_mfi_path=str(mfi_path),
+                        local_mfi_path=os.path.join(
+                            self.lasam_cfg_dir,
+                            f"mfi_params_{Path(cfg_name).stem}{mfi_suffix}",
+                        ),
+                    )
+                )
 
         # Preserve the existing parameter-vector initialization semantics: bounds and
         # initial values still come from the first sorted catchment config. Particle
@@ -710,6 +840,7 @@ class TileContext:
         self.n_layers = primary_soil.n_layers
         self.src_soil_path = primary_soil.src_soil_path
         self.local_soil_path = primary_soil.local_soil_path
+        self.dual_perm = bool(detected_dual_perm)
 
         self.nom_dir = os.path.join(work_root, "configs", "noahowp")
         self.include_nom = os.path.isdir(self.nom_dir)
@@ -718,6 +849,12 @@ class TileContext:
     def ensure_local_soil(self):
         for soil_ctx in self.soil_contexts:
             soil_ctx.ensure_local_soil()
+
+    def ensure_local_mfi(self):
+        if not self.dual_perm:
+            raise ValueError("Matrix-fracture interface parameters require dual_perm=true")
+        for mfi_ctx in self.mfi_contexts:
+            mfi_ctx.ensure_local_mfi()
 
     def read_soil_lines(self) -> List[str]:
         return self.soil_contexts[0].read_soil_lines()
@@ -814,6 +951,8 @@ def read_lasam_scalar_baseline(
             "CR_fast_discharge_threshold",
             "field_capacity_psi",
             "spf_factor",
+            "frac_to_pref",
+            "ratio_fracture_vol_to_total_vol",
         }
     else:
         requested = set(requested_params)
@@ -846,6 +985,12 @@ def read_lasam_scalar_baseline(
         values["field_capacity_psi"] = _get_float("field_capacity_psi=")
     if "spf_factor" in requested:
         values["spf_factor"] = _get_float("spf_factor=")
+    if "frac_to_pref" in requested:
+        values["frac_to_pref"] = _get_float("frac_to_pref=")
+    if "ratio_fracture_vol_to_total_vol" in requested:
+        values["ratio_fracture_vol_to_total_vol"] = _get_float(
+            "ratio_fracture_vol_to_total_vol="
+        )
 
     return values
 
@@ -853,9 +998,10 @@ def read_soil_layer_baseline(tile_ctx: TileContext, layer_1based: int) -> Dict[s
     if layer_1based < 1 or layer_1based > tile_ctx.n_layers:
         raise ValueError(f"Layer {layer_1based} out of range [1, {tile_ctx.n_layers}]")
     tile_ctx.ensure_local_soil()
-    soil_lines = tile_ctx.read_soil_lines()
-    soil_type = tile_ctx.soil_types[layer_1based - 1]
-    row = parse_soil_table_row(soil_lines[soil_type])
+    soil_ctx = tile_ctx.soil_contexts[0]
+    soil_lines = soil_ctx.read_soil_lines()
+    soil_type = soil_ctx.soil_types[layer_1based - 1]
+    row = parse_soil_table_row(soil_lines[soil_type], soil_ctx.value_count)
     theta_e = float(row.values[1])
     alpha = float(row.values[2])
     n = float(row.values[3])
@@ -924,6 +1070,15 @@ def apply_lasam_scalar(tile_ctx: TileContext, param: str, value: float):
         replacements = [("field_capacity_psi=", f"field_capacity_psi={float(value)}[cm]\n")]
     elif param == "spf_factor":
         replacements = [("spf_factor=", f"spf_factor={float(value)}\n")]
+    elif param == "frac_to_pref":
+        replacements = [("frac_to_pref=", f"frac_to_pref={float(value)}\n")]
+    elif param == "ratio_fracture_vol_to_total_vol":
+        replacements = [
+            (
+                "ratio_fracture_vol_to_total_vol=",
+                f"ratio_fracture_vol_to_total_vol={float(value)}\n",
+            )
+        ]
     else:
         raise ValueError(f"Unknown LASAM scalar param: {param}")
 
@@ -967,7 +1122,7 @@ def apply_soil_param(tile_ctx: TileContext, layer_1based: int, param: str, value
                 f"CASAM soil type out of range in {soil_ctx.config_name}: "
                 f"layer={layer_1based}, soil_type={soil_type}, soil table rows={len(soil_lines)}"
             )
-        row = parse_soil_table_row(soil_lines[soil_type])
+        row = parse_soil_table_row(soil_lines[soil_type], soil_ctx.value_count)
 
         if param == "log_alpha":
             alpha = 10 ** float(value)
@@ -984,6 +1139,85 @@ def apply_soil_param(tile_ctx: TileContext, layer_1based: int, param: str, value
 
         soil_lines[soil_type] = format_soil_table_row(row)
         soil_ctx.write_soil_lines(soil_lines)
+
+FRACTURE_SOIL_COLUMN_BY_PARAM = {
+    "theta_e_f": 6,
+    "log_alpha_f": 7,
+    "n_f": 8,
+    "log_Ks_f": 9,
+}
+
+def read_fracture_soil_baseline(tile_ctx: TileContext) -> Dict[str, float]:
+    if not tile_ctx.dual_perm:
+        raise ValueError("Fracture soil parameters require dual_perm=true")
+    tile_ctx.ensure_local_soil()
+    soil_ctx = tile_ctx.soil_contexts[0]
+    soil_lines = soil_ctx.read_soil_lines()
+    soil_type = soil_ctx.soil_types[0]
+    row = parse_soil_table_row(soil_lines[soil_type], soil_ctx.value_count)
+
+    theta_e_f = float(row.values[6])
+    alpha_f = float(row.values[7])
+    n_f = float(row.values[8])
+    Ks_f = float(row.values[9])
+    if alpha_f <= 0.0 or Ks_f <= 0.0:
+        raise ValueError("Fracture alpha_f and Ks_f must be positive for log10 calibration")
+    return {
+        "theta_e_f": theta_e_f,
+        "log_alpha_f": math.log10(alpha_f),
+        "n_f": n_f,
+        "log_Ks_f": math.log10(Ks_f),
+    }
+
+def apply_fracture_soil_param(tile_ctx: TileContext, param: str, value: float):
+    if param not in FRACTURE_SOIL_COLUMN_BY_PARAM:
+        raise ValueError(f"Unknown fracture soil param: {param}")
+    tile_ctx.ensure_local_soil()
+
+    written_value = 10 ** float(value) if param.startswith("log_") else float(value)
+    value_idx = FRACTURE_SOIL_COLUMN_BY_PARAM[param]
+    for soil_ctx in tile_ctx.soil_contexts:
+        if soil_ctx.value_count != DUAL_SOIL_TABLE_VALUE_COUNT:
+            raise ValueError("Fracture soil calibration requires a 10-value dual soil table")
+        soil_lines = soil_ctx.read_soil_lines()
+        for row_idx in range(1, len(soil_lines)):
+            if not soil_lines[row_idx].strip():
+                continue
+            row = parse_soil_table_row(soil_lines[row_idx], soil_ctx.value_count)
+            row.values[value_idx] = str(written_value)
+            soil_lines[row_idx] = format_soil_table_row(row)
+        soil_ctx.write_soil_lines(soil_lines)
+
+def read_mfi_baseline(tile_ctx: TileContext) -> Dict[str, float]:
+    tile_ctx.ensure_local_mfi()
+    mfi_ctx = tile_ctx.mfi_contexts[0]
+    mfi_lines = mfi_ctx.read_mfi_lines()
+    soil_type = tile_ctx.soil_contexts[0].soil_types[0]
+    row = parse_soil_table_row(mfi_lines[soil_type], MFI_TABLE_VALUE_COUNT)
+    a_f, beta_f, K_sa_f, gamma_f = map(float, row.values)
+    A_Gamma = beta_f * gamma_f * K_sa_f / (a_f * a_f)
+    if A_Gamma <= 0.0:
+        raise ValueError("A_Gamma must be positive for log10 calibration")
+    return {"log10_A_Gamma": math.log10(A_Gamma)}
+
+def apply_mfi_param(tile_ctx: TileContext, param: str, value: float):
+    if param != "log10_A_Gamma":
+        raise ValueError(f"Unknown matrix-fracture interface param: {param}")
+    tile_ctx.ensure_local_mfi()
+    A_Gamma = 10 ** float(value)
+
+    for mfi_ctx in tile_ctx.mfi_contexts:
+        mfi_lines = mfi_ctx.read_mfi_lines()
+        for row_idx in range(1, len(mfi_lines)):
+            if not mfi_lines[row_idx].strip():
+                continue
+            row = parse_soil_table_row(mfi_lines[row_idx], MFI_TABLE_VALUE_COUNT)
+            a_f, beta_f, _, gamma_f = map(float, row.values)
+            if a_f <= 0.0 or beta_f <= 0.0 or gamma_f <= 0.0:
+                raise ValueError("MFI a_f, beta_f, and gamma_f must be positive")
+            row.values[2] = str(A_Gamma * a_f * a_f / (beta_f * gamma_f))
+            mfi_lines[row_idx] = format_soil_table_row(row)
+        mfi_ctx.write_mfi_lines(mfi_lines)
 
 SOIL_TABLE_COLUMN_BY_PARAM = {
     "theta_r": 1,
@@ -1049,9 +1283,11 @@ def mirror_second_layer_uncalibrated_soil_params(tile_ctx: TileContext, specs: L
                 f"soil table rows={len(soil_lines)}"
             )
 
-        top_row = parse_soil_table_row(soil_lines[top_soil_type])
-        second_row = parse_soil_table_row(soil_lines[second_soil_type])
-        max_param_col = min(len(top_row.values), len(second_row.values))
+        top_row = parse_soil_table_row(soil_lines[top_soil_type], soil_ctx.value_count)
+        second_row = parse_soil_table_row(soil_lines[second_soil_type], soil_ctx.value_count)
+        # Fracture-domain values are global calibration parameters and must not
+        # be overwritten by the matrix-layer mirroring rule.
+        max_param_col = min(SOIL_TABLE_VALUE_COUNT, len(top_row.values), len(second_row.values))
         if max_param_col < 1:
             continue
 
@@ -1084,7 +1320,9 @@ def apply_nom_param(tile_ctx: TileContext, param: str, value: float):
 def build_specs_for_tile(tile_ctx: TileContext, tile_idx: int) -> List[ParamSpec]:
     specs: List[ParamSpec] = []
 
-    request_list = list(CALIBRATION_REQUEST)
+    request_list = list(
+        DUAL_FD_CALIBRATION_REQUEST if tile_ctx.dual_perm else CALIBRATION_REQUEST
+    )
     if DEFAULT_INCLUDE_NOM_IF_PRESENT and tile_ctx.include_nom:
         existing = {(r.get("kind", "").strip().lower(), r.get("param", "").strip()) for r in request_list}
         for r in DEFAULT_NOM_REQUEST:
@@ -1124,6 +1362,47 @@ def build_specs_for_tile(tile_ctx: TileContext, tile_idx: int) -> List[ParamSpec
                         apply=(lambda ctx, v, L=L, p=param: apply_soil_param(ctx, L, p, v))
                     )
                 )
+
+        elif kind == "fracture_soil":
+            if param not in BOUNDS["fracture_soil"]:
+                raise ValueError(f"No bounds registered for fracture soil param: {param}")
+            base = read_fracture_soil_baseline(tile_ctx)
+            specs.append(
+                ParamSpec(
+                    name=param,
+                    bounds=BOUNDS["fracture_soil"][param],
+                    init_value=float(base[param]),
+                    apply=(lambda ctx, v, p=param: apply_fracture_soil_param(ctx, p, v)),
+                )
+            )
+
+        elif kind == "mfi":
+            if param not in BOUNDS["mfi"]:
+                raise ValueError(f"No bounds registered for MFI param: {param}")
+            base = read_mfi_baseline(tile_ctx)
+            specs.append(
+                ParamSpec(
+                    name=param,
+                    bounds=BOUNDS["mfi"][param],
+                    init_value=float(base[param]),
+                    apply=(lambda ctx, v, p=param: apply_mfi_param(ctx, p, v)),
+                )
+            )
+
+        elif kind == "dual":
+            if not tile_ctx.dual_perm:
+                raise ValueError(f"Dual-permeability parameter {param} requires dual_perm=true")
+            if param not in BOUNDS["dual"]:
+                raise ValueError(f"No bounds registered for dual param: {param}")
+            dual_base = read_lasam_scalar_baseline(tile_ctx, requested_params=[param])
+            specs.append(
+                ParamSpec(
+                    name=param,
+                    bounds=BOUNDS["dual"][param],
+                    init_value=float(dual_base[param]),
+                    apply=(lambda ctx, v, p=param: apply_lasam_scalar(ctx, p, v)),
+                )
+            )
 
         elif kind == "lasam":
             if param not in BOUNDS["lasam"]:
@@ -1229,11 +1508,24 @@ def flatten_specs_for_all_tiles(
 
 def apply_particle_params_for_tile(tile_ctx: TileContext, specs: List[ParamSpec], values: np.ndarray):
     needs_soil = any(
-        s.name.startswith(("log_alpha_L", "n_L", "log_Ks_L", "theta_e_1")) or s.name.startswith("theta_e_L")
+        s.name.startswith(
+            (
+                "log_alpha_L",
+                "n_L",
+                "log_Ks_L",
+                "theta_e_1",
+                "log_alpha_f",
+                "n_f",
+                "theta_e_f",
+                "log_Ks_f",
+            )
+        ) or s.name.startswith("theta_e_L")
         for s in specs
     )
     if needs_soil:
         tile_ctx.ensure_local_soil()
+    if any(s.name == "log10_A_Gamma" for s in specs):
+        tile_ctx.ensure_local_mfi()
 
     for spec, v in zip(specs, values):
         spec.apply(tile_ctx, float(v))

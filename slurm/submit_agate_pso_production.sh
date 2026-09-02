@@ -31,6 +31,7 @@ export DOWNSTREAM_FLOWPATH_SUMMARY="${DOWNSTREAM_FLOWPATH_SUMMARY:-$NGSH_ROOT/mo
 # Model arrays. With both models, each model gets its own Slurm array.
 export CALIBRATION_ALGORITHM="pso"
 export MODELS="${MODELS:-casam,cfe}"
+export CASAM_MODE="${CASAM_MODE:-standard}"
 
 # Per-task resources. Four CPUs lets PSO run four particles at a time.
 export CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
@@ -80,6 +81,7 @@ NGSH_ROOT:                    $NGSH_ROOT
 BASIN_CSV:                    $BASIN_CSV
 Gages:                        $N_GAGES
 Models:                       $MODELS
+CASAM mode:                   $CASAM_MODE
 Calibration algorithm:        $CALIBRATION_ALGORITHM
 Total Slurm array tasks:      $TOTAL_TASKS
 Max array concurrency/model:  $MAX_ARRAY_CONCURRENT

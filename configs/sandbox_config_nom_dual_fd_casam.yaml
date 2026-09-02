@@ -1,0 +1,46 @@
+sandbox_dir  : "${NGSH_ROOT}"
+input_dir     : "${CIROH_INPUT_DIR}"
+output_dir    : "${NGEN_MODEL_ROOT}/out/dual_fd_casam_nom"
+
+subsetting :
+  hf_version               : "2.2"
+  hf_gpkg_path             : "${CIROH_HF_GPKG}"
+  dem_output_dir           : "${CIROH_INPUT_DIR}/dem"
+  number_processors        : 1
+
+  options :
+    use_gage_id :
+      use_gage_id  : FALSE
+      gage_ids     : "01105000"
+    use_gage_file :
+      use_gage_file : TRUE
+      gage_file     : "${BASIN_CSV}"
+      column_name   : "gage_id"
+    use_gpkg :
+      use_gpkg  : FALSE
+      gpkg_dir  : "/Users/ahmadjan/Core/SimulationsData/projects/ngen-bm/test/gpkgs"
+      pattern   :  "hf_v211_"
+
+forcings :
+  forcing_format     : ".nc"
+  forcing_time       : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+
+formulation :
+  ngen_dir           : "${NGEN_DIR}"
+  models             : "NOM, CASAM, T-route"
+
+  clean              : ['existing']
+  verbosity          : 0
+
+  np_per_basin           : 1
+  np_per_basin_adaptive  : False
+  basins_in_par          : 1
+
+simulation :
+  task_type : "control"
+  simulation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2013-09-30 23:00:00"}
+  calibration_time : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+  calib_eval_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+  validation_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+  valid_eval_time  : {"start_time" : "2010-10-01 00:00:00", "end_time" : "2021-09-30 23:00:00"}
+  restart_dir      : "<path_to_restart_dir>/{*}/202410042024_ngen_qaiklwj0_worker/"

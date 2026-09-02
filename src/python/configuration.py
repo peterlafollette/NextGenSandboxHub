@@ -720,10 +720,21 @@ class ConfigurationGenerator:
         casam_dir = os.path.join(self.output_dir, "configs/casam")
         self.create_directory(casam_dir)
 
+        casam_mode = os.environ.get("CASAM_MODE", "standard").strip().lower()
+        if casam_mode not in {"standard", "dual_fd"}:
+            raise ValueError(
+                f"Unsupported CASAM_MODE={casam_mode!r}; expected 'standard' or 'dual_fd'"
+            )
+
+        soil_param_filename = (
+            "vG_params_stat_nom_ordered_frac.dat"
+            if casam_mode == "dual_fd"
+            else "vG_params_stat_nom_ordered.dat"
+        )
         candidate_param_files = [
-            os.path.join(self.ngen_dir, "extern", "CASAM", "CASAM", "data", "vG_params_stat_nom_ordered.dat"),
-            os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", "vG_params_stat_nom_ordered.dat"),
-            os.path.join(self.ngen_dir, "extern", "LGAR-C", "LGAR-C", "data", "vG_params_stat_nom_ordered.dat"),
+            os.path.join(self.ngen_dir, "extern", "CASAM", "CASAM", "data", soil_param_filename),
+            os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", soil_param_filename),
+            os.path.join(self.ngen_dir, "extern", "LGAR-C", "LGAR-C", "data", soil_param_filename),
         ]
         casam_params = next((p for p in candidate_param_files if os.path.isfile(p)), None)
         if casam_params is None:
@@ -732,11 +743,25 @@ class ConfigurationGenerator:
                 + ", ".join(candidate_param_files)
             )
 
-        out = subprocess.call(f"cp -r {casam_params} {casam_dir}", shell=True)
-        if out:
-            raise RuntimeError(f"Failed to copy CASAM parameter file: {casam_params}")
+        shutil.copy2(casam_params, casam_dir)
 
         soil_param_file = os.path.join(casam_dir, os.path.basename(casam_params))
+        mfi_param_file = None
+        if casam_mode == "dual_fd":
+            mfi_param_filename = "vG_params_stat_nom_ordered_mfi.dat"
+            candidate_mfi_files = [
+                os.path.join(self.ngen_dir, "extern", "CASAM", "CASAM", "data", mfi_param_filename),
+                os.path.join(self.ngen_dir, "extern", "LGAR-C", "data", mfi_param_filename),
+                os.path.join(self.ngen_dir, "extern", "LGAR-C", "LGAR-C", "data", mfi_param_filename),
+            ]
+            mfi_params = next((p for p in candidate_mfi_files if os.path.isfile(p)), None)
+            if mfi_params is None:
+                raise FileNotFoundError(
+                    "Could not find CASAM matrix-fracture interface parameter file. Tried: "
+                    + ", ".join(candidate_mfi_files)
+                )
+            shutil.copy2(mfi_params, casam_dir)
+            mfi_param_file = os.path.join(casam_dir, os.path.basename(mfi_params))
 
         sft_calib = "False"
         soil_z = "10.0,15.0,18.0,23.0,29.0,36.0,44.0,55.0,69.0,86.0,107.0,134.0,166.0,207.0,258.0,322.0,401.0,500.0,600.0"
@@ -762,20 +787,40 @@ class ConfigurationGenerator:
             'giuh_ordinates=',
             'a=0.0001',
             'b=3.0',
-            'frac_to_GW=0.4',
             'lateral_flow_psi_threshold=500.0',
             'lateral_flow_factor=1.0',
-            f'CR_fast_discharge_threshold={cr_fast_discharge_threshold_cm}[cm]',
-            f'initial_CR_fast_storage={cr_fast_discharge_threshold_cm}[cm]',
             'PET_affects_precip=false',
-            'spf_factor=0.6',
-            'TO_enabled=true',
-            'initial_wetting_fronts_per_layer=4',
-            'mobile_groundwater_level=true',
-            'lower_bdy_flux_to_CR=true',
-            'free_drainage_enabled=false',
-            'allow_flux_caching=false'
         ]
+
+        if casam_mode == "dual_fd":
+            casam_params_base.extend([
+                f'soil_params_file_mfi={mfi_param_file}',
+                'dual_perm=true',
+                'dual_surface_boundary=legacy_handoff',
+                'frac_to_pref=0.1',
+                'ratio_fracture_vol_to_total_vol=0.1',
+                'frac_to_CR=0.0',
+                'TO_enabled=false',
+                'mobile_groundwater_level=false',
+                'lower_bdy_flux_to_CR=true',
+                'free_drainage_enabled=true',
+                'CR_fast_discharge_threshold=0.0[cm]',
+                'initial_CR_fast_storage=0.0[cm]',
+                'allow_flux_caching=true',
+            ])
+        else:
+            casam_params_base.extend([
+                'frac_to_GW=0.4',
+                f'CR_fast_discharge_threshold={cr_fast_discharge_threshold_cm}[cm]',
+                f'initial_CR_fast_storage={cr_fast_discharge_threshold_cm}[cm]',
+                'spf_factor=0.6',
+                'TO_enabled=true',
+                'initial_wetting_fronts_per_layer=4',
+                'mobile_groundwater_level=true',
+                'lower_bdy_flux_to_CR=true',
+                'free_drainage_enabled=false',
+                'allow_flux_caching=false',
+            ])
 
         if sft_coupled:
             casam_params_base.append('sft_coupled=true')

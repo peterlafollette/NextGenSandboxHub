@@ -102,8 +102,9 @@ def _retarget_lasam_file_fields(cfg_path: Path, particle_cfg_dir: Path):
         key = key.strip()
         val = raw_val.strip()
 
-        # treat any key ending with '_file' as a file pointer (e.g., 'soil_params_file')
-        if key.endswith("_file"):
+        # soil_params_file_mfi is also a file pointer, despite its legacy name
+        # not ending in "_file".
+        if key.endswith("_file") or key == "soil_params_file_mfi":
             src = Path(val)
             if not src.is_absolute():
                 src = (cfg_path.parent / src).resolve()

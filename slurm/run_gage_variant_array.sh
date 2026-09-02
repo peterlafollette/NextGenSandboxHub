@@ -17,6 +17,7 @@ set -euo pipefail
 # Required by submit helper or sbatch --export.
 MODEL="${MODEL:?Set MODEL to casam or cfe}"
 CALIBRATION_ALGORITHM="${CALIBRATION_ALGORITHM:-pso}"
+CASAM_MODE="${CASAM_MODE:-standard}"
 
 # HPC path defaults. Override with sbatch --export or environment variables.
 NGSH_ROOT="${NGSH_ROOT:-/users/4/plafolle/infil_proj/NextGenSandboxHub}"
@@ -64,6 +65,17 @@ case "$CALIBRATION_ALGORITHM" in
         exit 1
         ;;
 esac
+
+if [ "$MODEL" = "casam" ]; then
+    case "$CASAM_MODE" in
+        standard|dual_fd)
+            ;;
+        *)
+            echo "Unsupported CASAM_MODE: $CASAM_MODE (expected standard or dual_fd)" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 if [ -f "$PYTHON_VENV" ]; then
     source "$PYTHON_VENV"
@@ -139,14 +151,26 @@ case "${CALIBRATION_ALGORITHM}:${MODEL}:${FORMULATION_VARIANT}" in
         ;;
 esac
 
+if [ "$MODEL" = "casam" ] && [ "$CASAM_MODE" = "dual_fd" ]; then
+    if [ "$FORMULATION_VARIANT" = "pet" ]; then
+        SANDBOX_CONFIG="$NGSH_ROOT/configs/sandbox_config_dual_fd_casam.yaml"
+    else
+        SANDBOX_CONFIG="$NGSH_ROOT/configs/sandbox_config_nom_dual_fd_casam.yaml"
+    fi
+fi
+
+MODEL_VARIANT_PREFIX="$MODEL"
+if [ "$MODEL" = "casam" ] && [ "$CASAM_MODE" = "dual_fd" ]; then
+    MODEL_VARIANT_PREFIX="dual_fd_casam"
+fi
 if [ "$CALIBRATION_ALGORITHM" = "pso" ]; then
-    VARIANT_LABEL="${MODEL}_${FORMULATION_VARIANT}"
+    VARIANT_LABEL="${MODEL_VARIANT_PREFIX}_${FORMULATION_VARIANT}"
     WORK_VARIANT_LABEL="$VARIANT_LABEL"
 else
-    VARIANT_LABEL="${CALIBRATION_ALGORITHM}_${MODEL}_${FORMULATION_VARIANT}"
+    VARIANT_LABEL="${CALIBRATION_ALGORITHM}_${MODEL_VARIANT_PREFIX}_${FORMULATION_VARIANT}"
     # sandbox.py and the calibration scripts still write under the model/formulation
     # label; keep DDS separated only at the final destination path.
-    WORK_VARIANT_LABEL="${MODEL}_${FORMULATION_VARIANT}"
+    WORK_VARIANT_LABEL="${MODEL_VARIANT_PREFIX}_${FORMULATION_VARIANT}"
 fi
 if [ -z "${CONF_PARTICLES:-}" ]; then
     if [ "$CALIBRATION_ALGORITHM" = "dds" ]; then
@@ -203,6 +227,7 @@ status=$status
 job_id=${SLURM_JOB_ID:-}
 array_task_id=${SLURM_ARRAY_TASK_ID:-}
 model=$MODEL
+casam_mode=$CASAM_MODE
 formulation_variant=$FORMULATION_VARIANT
 gage_id=$GAGE_ID
 date=$(date)
@@ -222,6 +247,7 @@ echo "job id:                  ${SLURM_JOB_ID:-}"
 echo "array task id:           $TASK_ID"
 echo "algorithm:               $CALIBRATION_ALGORITHM"
 echo "model:                   $MODEL"
+echo "casam mode:              $CASAM_MODE"
 echo "formulation variant:     $FORMULATION_VARIANT"
 echo "gage id:                 $GAGE_ID"
 echo "node tmp:                $NODE_TMP"
@@ -254,6 +280,7 @@ export NGEN_JOB_CORES="${SLURM_CPUS_PER_TASK:-1}"
 export NGEN_TROUTE_CPU_POOL=1
 export OMP_NUM_THREADS=1
 export NGEN_SANDBOX_CONFIG="$SANDBOX_CONFIG"
+export CASAM_MODE
 export CAPTURE_FAILURE_BUNDLES
 export FAILURE_BUNDLE_INCLUDE_FORCING
 export FAILURE_BUNDLE_ROOT
