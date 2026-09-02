@@ -239,7 +239,7 @@ BOUNDS: Dict[str, Dict[str, Tuple[float, float]]] = {
         # "theta_e": (0.3, 0.6),
     },
     "fracture_soil": {
-        "log_alpha_f": (-3.0, 0.0),
+        "log_alpha_f": (-2.0, -0.5),
         "n_f": (2.0, 5.0),
         "theta_e_f": (0.3, 0.8),
         "log_Ks_f": (-1.0, 4.0),
