@@ -89,7 +89,7 @@ class DDS:
             base_roots=self.base_roots,
             include_nom=self.include_nom,
             n_tiles=self.n_tiles,
-            weights=self.weights
+            weights=([float(self.best_position[-1]), 1.0 - float(self.best_position[-1])] if self.n_tiles == 2 else self.weights)
         )
         self.best_value = obj_val
 
@@ -136,7 +136,7 @@ class DDS:
                 base_roots=self.base_roots,
                 include_nom=self.include_nom,
                 n_tiles=self.n_tiles,
-                weights=self.weights
+                weights=([float(candidate[-1]), 1.0 - float(candidate[-1])] if self.n_tiles == 2 else self.weights)
             )
 
             if obj_val < self.best_value:
@@ -175,7 +175,7 @@ class DDS:
             best_params=self.best_position,
             n_tiles=self.n_tiles,
             include_nom=self.include_nom,
-            weights=self.weights,
+            weights=([float(self.best_position[-1]), 1.0 - float(self.best_position[-1])] if self.n_tiles == 2 else self.weights),
             metric_to_calibrate_on=self.metric_to_calibrate_on
         )
 
